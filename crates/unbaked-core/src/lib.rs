@@ -1,8 +1,16 @@
 //! Read and write Unbaked media files.
 
+pub mod bake;
+pub mod json;
 pub mod mp4;
+mod open;
 pub mod package;
 pub mod png;
+pub mod recipe;
+pub mod rules;
+pub mod sniff;
+
+pub use open::{Container, OpenError, Opened, Status, detect, open, sha256_hex};
 
 /// The spec version this crate implements.
 pub const SPEC_VERSION: u32 = 0;

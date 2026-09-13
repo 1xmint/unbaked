@@ -314,7 +314,7 @@ fn root_entry(path: &str) -> Root {
 }
 
 /// Checks the naming rules of SPEC.md section 3.2.
-fn check_name(name: &str) -> Result<(), PackageError> {
+pub(crate) fn check_name(name: &str) -> Result<(), PackageError> {
     let bad = |reason| {
         Err(PackageError::BadName {
             name: name.to_owned(),

@@ -12,7 +12,9 @@ optional.
 - A **writer** creates or updates Unbaked files.
 - A **reader** opens them.
 - A **renderer** turns a recipe into finished media.
-- All JSON is UTF-8, RFC 8259.
+- All JSON is UTF-8, RFC 8259, without a byte order mark. An object MUST NOT
+  repeat a key, and readers MUST reject one that does: JSON parsers disagree on
+  which copy wins, so two tools could read different recipes from the same bytes.
 - All hashes are SHA-256, written as 64 lowercase hex characters.
 
 ---
@@ -674,6 +676,9 @@ the render is out of date without rendering.
 | `assets_sha256` | Package path → SHA-256, for every file an asset's `path` or `license.file` references. Referenced fonts are not listed: their fingerprint is already in the recipe. |
 | `render_sha256` | SHA-256 of the carrier with the slot removed (below) |
 
+All five fields are required. As in `recipe.json`, readers MUST reject any other
+field unless its name starts with `x-`, and MUST ignore `x-` fields.
+
 **Carrier with the slot removed:**
 - PNG: the file bytes with the whole `unBK` chunk (length, type, data, CRC) cut out.
 - MP4: the file bytes with the whole `uuid` box cut out.
@@ -682,11 +687,16 @@ the render is out of date without rendering.
 
 | Result | When |
 |---|---|
+| `invalid` | `recipe.json` or `bake.json` breaks this spec. No hashes are compared. |
 | `fresh` | Every hash matches |
-| `stale` | `recipe_sha256` or any asset hash differs, or an asset was added or removed. The layers changed but the render is old. |
+| `stale` | `recipe_sha256` or any asset hash differs, an asset was added or removed, or the carrier does not fit `output.kind`. The layers changed but the render is old. |
 | `render-modified` | Recipe and assets match but `render_sha256` differs. Something edited the visible media outside Unbaked. |
 
 `stale` wins if both apply. Writers MUST write a new bake.json every time they render.
+
+A carrier that does not fit `output.kind` (section 2), such as an MP4 whose
+recipe now says `image`, is `stale`, not `invalid`. Switching kind is a
+one-word edit, and the file stays readable until it is rendered again.
 
 ---
 
