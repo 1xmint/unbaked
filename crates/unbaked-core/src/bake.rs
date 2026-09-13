@@ -1,11 +1,27 @@
 //! `bake.json`, SPEC.md section 7: the fingerprints of the last render, and the
 //! comparison that says whether the render is still up to date.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
 use crate::json::{self, Problem, Problems, join};
+use crate::recipe::{AssetSource, Recipe};
+
+/// Every package file `bake.json` fingerprints: each asset's `path` and each
+/// `license.file`. Referenced fonts are not listed; the recipe holds their hash.
+pub fn referenced_files(recipe: &Recipe) -> BTreeSet<&str> {
+    let mut out = BTreeSet::new();
+    for asset in recipe.assets.values() {
+        if let AssetSource::Path(path) = &asset.source {
+            out.insert(path.as_str());
+        }
+        if let Some(file) = asset.license.as_ref().and_then(|l| l.file.as_ref()) {
+            out.insert(file.as_str());
+        }
+    }
+    out
+}
 
 /// A parsed `bake.json`. Hashes are 64 lowercase hex characters.
 #[derive(Debug, Clone, PartialEq, Eq)]

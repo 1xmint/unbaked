@@ -13,7 +13,7 @@ use unbaked_core::package::Limits;
 use unbaked_core::{Status, open, pack};
 
 const HELP: &str = "\
-unbaked: check, read, unpack and pack Unbaked media files
+unbaked: check, read, unpack, pack and render Unbaked media files
 
 Usage:
   unbaked check <file> [--json]         Is the render fresh, stale, render-modified or invalid?
@@ -23,12 +23,16 @@ Usage:
                                         Put a folder's package into a file, replacing its
                                         package. Writes <file> in place unless -o is given.
                                         Keeps the file's bake.json if the folder has none.
+  unbaked render <file-or-dir> [-o <out>]
+                                        Render the recipe and write a fresh Unbaked file.
+                                        Renders a file in place unless -o is given; a
+                                        folder needs -o. Only image output for now.
 
 Exit codes:
   0  success (check: fresh)
   1  check: stale or render-modified
-  2  check: invalid recipe or bake.json
-  3  not an Unbaked file, or its package breaks the format rules
+  2  invalid recipe or bake.json
+  3  not an Unbaked file, its package breaks the format rules, or it cannot be rendered
   4  wrong arguments, or a file could not be read or written
 ";
 
@@ -36,7 +40,9 @@ Exit codes:
 enum Fail {
     /// Wrong arguments.
     Usage(String),
-    /// The file is not Unbaked or its package is broken.
+    /// The recipe breaks the spec.
+    Invalid(String),
+    /// The file is not Unbaked, its package is broken, or it cannot be rendered.
     Format(String),
     /// Reading or writing failed.
     Io(String),
@@ -54,6 +60,10 @@ fn main() -> ExitCode {
         Err(Fail::Usage(message)) => {
             eprintln!("unbaked: {message}\n\n{HELP}");
             4
+        }
+        Err(Fail::Invalid(message)) => {
+            eprintln!("unbaked: {message}");
+            2
         }
         Err(Fail::Format(message)) => {
             eprintln!("unbaked: {message}");
@@ -92,7 +102,9 @@ fn run() -> Result<u8, Fail> {
             Value(v) => positional.push(v),
             Long("json") if command == "check" => json_output = true,
             Long("into") if command == "pack" => into = Some(args.value()?.into()),
-            Short('o') | Long("output") if command == "pack" => out = Some(args.value()?.into()),
+            Short('o') | Long("output") if command == "pack" || command == "render" => {
+                out = Some(args.value()?.into())
+            }
             Long("help") | Short('h') => {
                 print!("{HELP}");
                 return Ok(0);
@@ -124,8 +136,31 @@ fn run() -> Result<u8, Fail> {
             let into = into.ok_or_else(|| Fail::Usage("pack needs --into <file>".into()))?;
             pack_into(&paths[0], &into, out.as_deref().unwrap_or(&into))
         }
+        "render" => render(&wanted(1)?[0], out.as_deref()),
         other => Err(Fail::Usage(format!("unknown command {other:?}"))),
     }
+}
+
+fn render(input: &Path, out: Option<&Path>) -> Result<u8, Fail> {
+    let (files, out) = if input.is_dir() {
+        let out = out.ok_or_else(|| Fail::Usage("render of a folder needs -o <out>".into()))?;
+        let files = pack::read_folder(input, Limits::default()).map_err(|e| match e {
+            pack::FolderError::Io { .. } => Fail::Io(e.to_string()),
+            other => Fail::Format(format!("{}: {other}", input.display())),
+        })?;
+        (files, out)
+    } else {
+        (opened_files(input)?, out.unwrap_or(input))
+    };
+    let file = unbaked_render::render(&files, unbaked_render::RenderLimits::default()).map_err(
+        |e| match e {
+            unbaked_render::RenderError::Recipe(_) => Fail::Invalid(e.to_string()),
+            other => Fail::Format(format!("{}: {other}", input.display())),
+        },
+    )?;
+    write_replacing(out, &file)?;
+    eprintln!("rendered {}", out.display());
+    Ok(0)
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, Fail> {

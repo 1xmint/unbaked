@@ -193,6 +193,43 @@ fn pack_without_o_replaces_the_file_in_place() {
 }
 
 #[test]
+fn render_makes_a_stale_file_fresh_again() {
+    let s = Scratch::new("render");
+    let file = fresh_file(&s.0, RECIPE);
+    let folder = s.0.join("poster");
+    assert_eq!(unbaked(&[&"unpack", &file, &folder]).status.code(), Some(0));
+    fs::write(
+        folder.join("recipe.json"),
+        RECIPE.replace("\"width\": 1", "\"width\": 3"),
+    )
+    .unwrap();
+    assert_eq!(
+        unbaked(&[&"pack", &folder, &"--into", &file]).status.code(),
+        Some(0)
+    );
+    assert_eq!(unbaked(&[&"check", &file]).status.code(), Some(1));
+
+    let out = unbaked(&[&"render", &file]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let out = unbaked(&[&"check", &file, &"--json"]);
+    assert_eq!(json(&out), serde_json::json!({ "status": "fresh" }));
+
+    // A folder renders straight to a new file.
+    let from_folder = s.0.join("from-folder.unbaked.png");
+    let out = unbaked(&[&"render", &folder, &"-o", &from_folder]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(unbaked(&[&"check", &from_folder]).status.code(), Some(0));
+    assert_eq!(unbaked(&[&"render", &folder]).status.code(), Some(4));
+
+    // A broken recipe is reported as invalid, and nothing is written.
+    fs::write(folder.join("recipe.json"), "{}").unwrap();
+    let broken = s.0.join("broken.unbaked.png");
+    let out = unbaked(&[&"render", &folder, &"-o", &broken]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(!broken.exists());
+}
+
+#[test]
 fn invalid_and_foreign_files_get_their_own_exit_codes() {
     let s = Scratch::new("bad");
     let broken = fresh_file(

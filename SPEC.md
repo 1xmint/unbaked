@@ -578,7 +578,8 @@ keyframes and transitions) are those at the frame's local time of each layer.
 
 Each output pixel centre `(px + 0.5, py + 0.5)` is mapped back through `M⁻¹`.
 The layer's source image (the decoded image, video frame, rendered text or solid
-fill, after effects) is sampled there.
+fill, after effects) is sampled there. A solid's source image is
+`ceil(width) × ceil(height)` pixels of its colour, mapped onto its exact box.
 
 **Sampling.** Let `s` be the smaller of the lengths of `M`'s two column vectors:
 how many canvas pixels one source pixel covers along each source axis.
@@ -595,7 +596,7 @@ first, goes through these steps:
 2. **Effects**, in order (section 5.5). For a group, on its buffer.
 3. **Place.** Sample into a transparent canvas-sized buffer through `M` (section 5.3). A group's buffer is already in canvas space and is used as is.
 4. **Mask.** Multiply by the mask value `m` per pixel (section 4.11).
-5. **Opacity.** Multiply by `opacity`, including transition factors.
+5. **Opacity.** Multiply by `opacity`, including transition factors, clamped to 0–1 (a keyframe curve may overshoot).
 6. **Blend** the result onto what is below, source-over, using `blend`.
 
 Blend modes and their formulas are exactly the separable blend modes of **W3C
