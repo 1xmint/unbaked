@@ -141,7 +141,7 @@ pub fn without_slot(file: &[u8]) -> Result<Vec<u8>, PngError> {
 }
 
 /// CRC-32 as PNG uses it (ISO 3309, polynomial 0xEDB88320), over several parts.
-fn crc32(parts: &[&[u8]]) -> u32 {
+pub(crate) fn crc32(parts: &[&[u8]]) -> u32 {
     const TABLE: [u32; 256] = {
         let mut table = [0u32; 256];
         let mut n = 0;
