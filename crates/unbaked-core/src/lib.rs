@@ -1,5 +1,7 @@
 //! Read and write Unbaked media files.
 
+pub mod png;
+
 /// The spec version this crate implements.
 pub const SPEC_VERSION: u32 = 0;
 
