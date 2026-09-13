@@ -154,7 +154,12 @@ this spec does not define, at any depth, unless its name starts with `x-`.
 Readers MUST ignore `x-` fields. Renderers MUST NOT let `x-` fields change output.
 
 **Ids.** Asset ids, layer ids and clip ids MUST match `^[A-Za-z0-9_-]{1,64}$`.
-Layer and clip ids MUST be unique across the whole recipe.
+Layer and clip ids MUST be unique across the whole recipe, including layers
+inside groups and masks.
+
+**Written for AI editing.** Every field has one type and, where it has a unit,
+the unit is in its name (`_ms`, `_px`, `_deg`, `_db`). Tools that accept
+friendlier input such as `"1m30s"` convert it before writing the recipe.
 
 ### 4.2 output
 
@@ -179,9 +184,14 @@ as opaque. H.264 output has no alpha.
 }
 ```
 
-- `path` is a package path (section 3.2 rules) under `assets/`.
-- The file MUST exist.
-- The asset's kind is detected from the file's bytes, not its name.
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `path` | string | yes, unless `ref` | Package path (section 3.2 rules) under `assets/`. The file MUST exist. |
+| `ref` | object | fonts only, instead of `path` | A font that is not packed, section 4.12 |
+| `license` | object | yes for packed fonts, otherwise optional | Section 4.12 |
+
+The asset's kind is detected from the file's bytes, not its name. An asset MUST
+have exactly one of `path` and `ref`.
 
 Every renderer MUST support at least:
 
@@ -202,16 +212,30 @@ because of them. Writers SHOULD remove them.
 **Color.** A string `"#RRGGBB"` or `"#RRGGBBAA"`: sRGB, not premultiplied, hex
 digits in either case. `AA` defaults to `ff`.
 
-**Transform.** An optional object on every visual layer:
+**Local time.** Every time inside a layer or clip is measured from that layer's
+or clip's own `start_ms`, and a nested layer's `start_ms` is measured from its
+parent's `start_ms`. Moving a layer or group in time moves everything inside it.
+
+**Animatable number.** Fields marked *animatable* take either a plain number or
+a keyframe object (section 4.8):
+
+```json
+"opacity": 1
+"opacity": { "keys": [ { "t_ms": 0, "v": 0, "ease": "ease-out" }, { "t_ms": 500, "v": 1 } ] }
+```
+
+**Transform.** An optional object on every visual layer. All fields are animatable.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `x`, `y` | number | `0` | Canvas position of the anchor, in pixels. Origin top-left, y points down. |
 | `anchor_x`, `anchor_y` | number | `0` | Anchor point as a fraction of the layer's own box. `0,0` top-left, `0.5,0.5` centre. |
-| `scale_x`, `scale_y` | number | `1` | Scale about the anchor. MUST be > 0. |
+| `scale_x`, `scale_y` | number | `1` | Scale about the anchor. MUST NOT be negative at any time. At `0` the layer draws nothing. |
 | `rotation_deg` | number | `0` | Clockwise rotation about the anchor |
 
-The layer box is scaled, then rotated, then its anchor is placed at `x,y`.
+The layer box is scaled, then rotated, then its anchor is placed at `x,y`. Inside
+a group, the result is then transformed by the group's transform, and so on
+outward.
 
 ### 4.5 Visual layers
 
@@ -220,17 +244,20 @@ The layer box is scaled, then rotated, then its anchor is placed at `x,y`.
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
 | `id` | string | yes | | Unique id |
-| `type` | string | yes | | `image`, `video`, `text` or `solid` |
-| `start_ms` | integer | no | `0` | First visible time (`video` only) |
-| `end_ms` | integer | no | `output.duration_ms` | Visible until, exclusive (`video` only) |
+| `type` | string | yes | | `image`, `video`, `text`, `solid` or `group` |
+| `start_ms` | integer | no | `0` | First visible time, from the parent's start (`video` only) |
+| `end_ms` | integer | no | parent's end | Visible until, exclusive, from the parent's start (`video` only) |
 | `transform` | object | no | identity | Section 4.4 |
-| `opacity` | number | no | `1` | 0–1 |
+| `opacity` | animatable | no | `1` | 0–1 |
 | `blend` | string | no | `"normal"` | Section 5.4 |
 | `effects` | array | no | `[]` | Applied in order, section 5.5 |
+| `mask` | object | no | | Section 4.11 |
+| `in`, `out` | object | no | | Transitions, section 4.9 (`video` only) |
 | `hidden` | boolean | no | `false` | Skipped entirely when `true` |
 
-For `image` output, `start_ms` and `end_ms` MUST be absent. For `video` output,
-`start_ms` MUST be less than `end_ms`.
+For `image` output, `start_ms`, `end_ms`, `in`, `out` and keyframe objects MUST
+be absent. For `video` output, `start_ms` MUST be less than `end_ms`. A child is
+never visible outside its parent's visible time.
 
 Type-specific fields:
 
@@ -265,7 +292,8 @@ that references the same asset. Past the end of the source, the last frame is he
 | `box_width` | no | | Wrap width in pixels. Without it, lines only break at `\n`. |
 | `font_index` | no | `0` | Face index for font collections |
 
-System fonts are never used. A text layer draws only with fonts inside the package.
+System fonts are never used by name. A text layer draws only with a packed font
+or a referenced font whose fingerprint matches (section 4.12).
 
 **`solid`**
 
@@ -274,12 +302,19 @@ System fonts are never used. A text layer draws only with fonts inside the packa
 | `color` | yes | Fill color |
 | `width`, `height` | yes | Box size in pixels |
 
+**`group`**: see section 4.10.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `layers` | yes | Child layers, bottom first. Same rules as top-level `layers`. |
+
 ### 4.6 Layer box
 
 Before any transform, every layer occupies a box with its top-left at `0,0`:
 
 - `image` / `video`: the size from `width`/`height` rules above.
 - `solid`: `width` × `height`.
+- `group`: the canvas, `output.width` × `output.height`.
 - `text`:
   - width is `box_width` if given, otherwise the widest line's advance width;
   - height is `line_height × size_px × line count`;
@@ -296,13 +331,165 @@ Before any transform, every layer occupies a box with its top-left at `0,0`:
 | `start_ms` | integer | no | `0` | Output time where the clip begins |
 | `trim_start_ms` | integer | no | `0` | Source time played at `start_ms` |
 | `duration_ms` | integer | no | rest of source | How long the clip plays |
-| `gain_db` | number | no | `0` | Volume change in decibels |
+| `gain_db` | animatable | no | `0` | Volume change in decibels. Keyframe times are from the clip's `start_ms`. |
 | `fade_in_ms` | integer | no | `0` | Fade from silence at the start |
 | `fade_out_ms` | integer | no | `0` | Fade to silence at the end |
 | `muted` | boolean | no | `false` | Skipped entirely when `true` |
 
 Parts of a clip past `output.duration_ms` are cut off. Clips produce silence
 past the end of their source.
+
+### 4.8 Keyframes
+
+A keyframe object makes a number change over time.
+
+```json
+"x": { "keys": [
+  { "t_ms": 0,    "v": -400, "ease": "ease-out" },
+  { "t_ms": 600,  "v": 100 },
+  { "t_ms": 3000, "v": 100,  "ease": "hold" },
+  { "t_ms": 3001, "v": 900 }
+] }
+```
+
+| Field | Type | Required | Default | Meaning |
+|---|---|---|---|---|
+| `keys` | array | yes | | At least one key, in strictly increasing `t_ms` |
+| `keys[].t_ms` | integer | yes | | Local time of the key (section 4.4) |
+| `keys[].v` | number | yes | | Value at that time |
+| `keys[].ease` | string or array | no | `"linear"` | How the value moves from this key to the next |
+
+**Easing.** One of:
+- `"linear"`
+- `"hold"`: stays at `v` until the next key
+- `"ease"`, `"ease-in"`, `"ease-out"`, `"ease-in-out"`: the cubic Bézier curves that **W3C CSS Easing Functions Level 1** gives these keywords
+- `[x1, y1, x2, y2]`: a cubic Bézier with `0 ≤ x1, x2 ≤ 1`, as CSS `cubic-bezier()` defines it
+
+**Value at local time `t`** (may be fractional, section 5.2):
+- before the first key: the first key's `v`;
+- after the last key: the last key's `v`;
+- between key `a` and the next key `b`: `p = (t − a.t_ms) / (b.t_ms − a.t_ms)`, then `v = a.v + (b.v − a.v) × E(p)`, where `E` is `a.ease`. For Bézier curves, the renderer solves for the curve parameter to within 10⁻⁶.
+
+Animatable fields are: every `transform` field, `opacity`, the number parameters
+of effects (section 5.5), and `gain_db`. No other field accepts a keyframe object.
+
+### 4.9 Transitions
+
+`in` and `out` are shortcuts for common keyframe patterns at the start and end of
+a layer. A renderer computes them as multipliers and offsets on top of the
+layer's own values, so transitions work together with keyframes.
+
+```json
+"in":  { "type": "slide-left", "duration_ms": 400, "ease": "ease-out" },
+"out": { "type": "fade", "duration_ms": 300 }
+```
+
+| Field | Type | Required | Default | Meaning |
+|---|---|---|---|---|
+| `type` | string | yes | | Preset name, below |
+| `duration_ms` | integer | yes | | Length, > 0, and no longer than the layer |
+| `ease` | string or array | no | `"linear"` | Easing as in section 4.8. `"hold"` is not allowed. |
+
+**Progress.** For `in`, `p = E(clamp(t / duration_ms, 0, 1))` with local time
+`t`. For `out`, `p = E(clamp((end − t) / duration_ms, 0, 1))`, where `end` is the
+layer's visible length. `p = 1` means fully shown.
+
+The name says which way the layer moves, for both `in` and `out`. With
+`W = output.width`, `H = output.height` and `q = 1 − p`:
+
+| `type` | As `in` | As `out` |
+|---|---|---|
+| `fade` | opacity × `p` | opacity × `p` |
+| `slide-left` | x + `q·W` (enters from the right) | x − `q·W` (leaves to the left) |
+| `slide-right` | x − `q·W` (enters from the left) | x + `q·W` (leaves to the right) |
+| `slide-up` | y + `q·H` (enters from below) | y − `q·H` (leaves upward) |
+| `slide-down` | y − `q·H` (enters from above) | y + `q·H` (leaves downward) |
+| `zoom` | scale_x, scale_y and opacity × `p` | scale_x, scale_y and opacity × `p` |
+
+Where `in` and `out` overlap in time, both apply.
+
+A crossfade is two overlapping layers: `out: fade` on the first and `in: fade` on
+the second.
+
+### 4.10 Groups
+
+A `group` layer holds child layers and treats them as one layer.
+
+- Children render bottom to top into a transparent, canvas-sized buffer (the group is **isolated**: children blend with each other, not with what is below the group).
+- Each child's transform is combined with the group's transform (section 4.4).
+- The group's `effects` then apply to that buffer, in canvas coordinates. Pixels pushed outside the canvas by a group effect are lost.
+- The group's `mask`, `opacity` and `blend` then apply as for any layer.
+- Groups MAY contain groups. Readers MUST reject nesting deeper than 32 levels.
+
+### 4.11 Masks
+
+A mask controls where a layer shows. Its contents are their own small list of
+layers that are never drawn to the canvas themselves.
+
+```json
+"mask": {
+  "mode": "alpha",
+  "invert": false,
+  "layers": [
+    { "id": "spot", "type": "solid", "color": "#ffffffff", "width": 600, "height": 600,
+      "transform": { "x": 960, "y": 540, "anchor_x": 0.5, "anchor_y": 0.5 } }
+  ]
+}
+```
+
+| Field | Type | Required | Default | Meaning |
+|---|---|---|---|---|
+| `layers` | array | yes | | Mask layers, bottom first. Same rules as `layers`. |
+| `mode` | string | no | `"alpha"` | `alpha` or `luminance` |
+| `invert` | boolean | no | `false` | Use `1 − m` instead of `m` |
+
+- Mask layers are rendered like a group (section 4.10) into their own canvas-sized buffer. They are placed by their own transforms and by the transforms of the groups enclosing the masked layer, but not by the masked layer's own transform. Their times are from the masked layer's absolute start.
+- Per pixel, the mask value `m` is:
+  - `alpha`: the buffer's alpha;
+  - `luminance`: `(0.2126·R + 0.7152·G + 0.0722·B) × A`, on un-premultiplied gamma-encoded values.
+- The masked layer's transformed, effected pixels are multiplied by `m` (color and alpha, premultiplied) before opacity and blending.
+- A mask layer MAY itself have a mask.
+
+### 4.12 Fonts and licences
+
+**Packed fonts** have a `path` and MUST have a `license`:
+
+```json
+"inter": {
+  "path": "assets/fonts/Inter-Regular.ttf",
+  "license": { "spdx": "OFL-1.1", "file": "assets/fonts/OFL.txt" }
+}
+```
+
+| `license` field | Type | Meaning |
+|---|---|---|
+| `spdx` | string | An SPDX licence id (`OFL-1.1`, `Apache-2.0`), or `LicenseRef-` followed by a name for anything else |
+| `file` | string | Package path of the licence text |
+
+- At least one of `spdx` and `file` MUST be present.
+- When `spdx` is `OFL-1.1` or `Apache-2.0`, `file` MUST be present too, because both licences require their text to travel with the font.
+- Writers MUST pack the complete font file, not a subset. The OFL counts subsetting as modification, and modified fonts may lose the right to their name.
+- Any asset MAY carry a `license` in the same shape.
+- Readers do not judge whether a licence allows packing. That is the author's responsibility.
+
+**Referenced fonts** have a `ref` instead of a `path`. The font file is not in the
+package: its licence may not allow handing it out.
+
+```json
+"brand": {
+  "ref": { "family": "Brand Sans", "style": "Bold", "sha256": "…" }
+}
+```
+
+| `ref` field | Required | Meaning |
+|---|---|---|
+| `family` | yes | Family name, for people |
+| `style` | no | Style name, for people |
+| `sha256` | yes | SHA-256 of the exact font file |
+
+- The last render still shows everywhere, because the text is already in the pixels.
+- To render again, a renderer MUST find a font file with the same SHA-256 from a source its user controls, such as a local fonts folder. Matching by family name alone is not allowed.
+- If no match is found, rendering MUST fail with an error naming `family` and `style`. Reading, unpacking and checking still work.
 
 ---
 
@@ -324,12 +511,22 @@ how close "the same" has to be.
 Output frame `n` (starting at 0) has time `tₙ = n × den / num` seconds for
 `fps = "num/den"`. There are `ceil(duration_ms × num / (1000 × den))` frames.
 
-A layer is visible on frame `n` when `start_ms ≤ 1000·tₙ < end_ms`. Compare with
-integer arithmetic: `start_ms × num ≤ 1000 × n × den < end_ms × num`.
+**Absolute times.** A layer's absolute start `S` is its `start_ms` plus the
+absolute start of its parent (a group, or the layer a mask belongs to), and `0`
+at the top level. Its absolute end `E` is `S − start_ms + end_ms`, capped at the
+parent's absolute end, with `output.duration_ms` at the top level.
 
-For a visible video layer, the source time is
-`s = 1000·tₙ − start_ms + trim_start_ms` ms. The renderer shows the source frame
-with the greatest presentation time ≤ `s`.
+A layer is visible on frame `n` when `S ≤ 1000·tₙ < E`. Compare with integer
+arithmetic: `S × num ≤ 1000 × n × den < E × num`.
+
+**Local time** on frame `n` is `t = 1000·tₙ − S` ms. It may be fractional.
+Keyframes and transitions are evaluated at `t`. The visible length used by `out`
+is `E − S`.
+
+For a visible video layer, the source time is `s = t + trim_start_ms` ms. The
+renderer shows the source frame with the greatest presentation time ≤ `s`.
+
+For `image` output, there is a single frame and every layer is visible.
 
 Source frames are converted from YUV to RGB using the matrix and range the
 stream signals. If none is signalled: BT.709 limited range when the height is
@@ -338,24 +535,32 @@ applied.
 
 ### 5.3 Transform and sampling
 
-Each output pixel centre `(px + 0.5, py + 0.5)` is mapped back through the
-inverse transform into the layer box. The layer's source image (the decoded
-image, video frame, rendered text or solid fill, after effects) is then sampled
-there.
+Each layer's full transform `M` is an affine matrix mapping source-image pixels
+to canvas pixels: source image to layer box, then the layer's transform, then
+each enclosing group's transform, innermost first. Transform values (after
+keyframes and transitions) are those at the frame's local time of each layer.
 
-**Sampling.** For each axis, the effective scale is the layer's scale times the
-box size divided by the source image size on that axis
-(`scale_x × box_width / source_width`, and the same for y). Let `s` be the
-smaller of the two.
+Each output pixel centre `(px + 0.5, py + 0.5)` is mapped back through `M⁻¹`.
+The layer's source image (the decoded image, video frame, rendered text or solid
+fill, after effects) is sampled there.
+
+**Sampling.** Let `s` be the smaller of the lengths of `M`'s two column vectors:
+how many canvas pixels one source pixel covers along each source axis.
 
 - If `s ≥ 1`: bilinear interpolation. Source pixel centres are at `+0.5`. Outside the source image, pixels are transparent.
 - If `s < 1`: build a mip chain first. Level 0 is the source. Each next level halves width and height (rounding up), and every pixel is the average of the up-to-4 premultiplied pixels it covers, ignoring pixels outside the image. Sample level `L = min(floor(log2(1/s)), last level)` bilinearly.
 
 ### 5.4 Compositing
 
-Canvas starts as `output.background`. Each non-hidden, visible layer is drawn in
-order: the sampled colour with its alpha multiplied by `opacity`, composited
-source-over using `blend`.
+Canvas starts as `output.background`. Each non-hidden, visible layer, bottom
+first, goes through these steps:
+
+1. **Source image.** Decode the image or video frame, draw the text, or fill the solid. A group renders its children into a transparent canvas-sized buffer by these same steps (section 4.10).
+2. **Effects**, in order (section 5.5). For a group, on its buffer.
+3. **Place.** Sample into a transparent canvas-sized buffer through `M` (section 5.3). A group's buffer is already in canvas space and is used as is.
+4. **Mask.** Multiply by the mask value `m` per pixel (section 4.11).
+5. **Opacity.** Multiply by `opacity`, including transition factors.
+6. **Blend** the result onto what is below, source-over, using `blend`.
 
 Blend modes and their formulas are exactly the separable blend modes of **W3C
 Compositing and Blending Level 1**, combined with the source-over operator as
@@ -367,7 +572,8 @@ that spec defines the general blending-and-compositing formula:
 ### 5.5 Effects
 
 Effects change a layer's own pixels before transform and compositing, in array
-order. Each is an object with a `type`.
+order. Each is an object with a `type`. Every number parameter below is
+animatable; `color` is not.
 
 **`blur`**: `sigma` (pixels, > 0).
 - Gaussian blur on premultiplied colour, kernel radius `ceil(3 × sigma)`, weights normalised to sum to 1, applied horizontally then vertically.
@@ -400,7 +606,7 @@ order. Each is an object with a `type`.
 1. Each non-muted clip is decoded to floating point −1–1.
 2. It is resampled to `output.sample_rate`.
 3. Channels are mapped: mono to stereo copies the channel; stereo to mono averages the two. Sources with more than 2 channels are rejected in version 0.
-4. Gain `10^(gain_db / 20)` is applied.
+4. Gain `10^(gain_db / 20)` is applied per sample, with `gain_db` evaluated at the sample's local time `1000·k / sample_rate − start_ms`.
 5. Fades are linear in amplitude. Fade-in scales by `t / fade_in_ms` over the first `fade_in_ms`. Fade-out mirrors it at the end.
 6. Output sample `k` has time `k / sample_rate` s. A clip contributes to sample `k` when `start_ms ≤ 1000·k / sample_rate < start_ms + duration_ms`.
 7. All clips are summed, then hard-clipped to −1–1.
@@ -431,7 +637,7 @@ the render is out of date without rendering.
 | `unbaked` | Spec version used |
 | `renderer` | Free text naming the renderer and its version |
 | `recipe_sha256` | SHA-256 of `recipe.json` exactly as stored (uncompressed bytes) |
-| `assets_sha256` | Package path → SHA-256, for every file an asset references |
+| `assets_sha256` | Package path → SHA-256, for every file an asset's `path` or `license.file` references. Referenced fonts are not listed: their fingerprint is already in the recipe. |
 | `render_sha256` | SHA-256 of the carrier with the slot removed (below) |
 
 **Carrier with the slot removed:**
@@ -480,11 +686,10 @@ as hostile:
 
 Planned for later versions, not allowed now:
 
-- masks and clipping groups
-- layer groups
-- keyframed animation (values changing over time)
-- transitions
-- transparent video
+- 3D model layers, as glTF 2.0 with a camera, rendered into the image or video. Blender files are not planned directly; Blender exports glTF.
+- transparent video, as input layers and as output
+- keyframes on colours and text size
+- transition presets beyond section 4.9, such as wipes
 - colour management (ICC)
 - vector (SVG) layers
 - audio effects beyond gain and fades
