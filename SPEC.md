@@ -106,7 +106,7 @@ whose names start with `x-`, and MUST reject any other unknown root entry.
 
 Writers MUST:
 - use compression method 0 (stored) for media and font assets, and 0 or 8 (deflate) for everything else;
-- encode names as UTF-8, set the UTF-8 flag (bit 11), and use `/` as the separator;
+- encode names as UTF-8, set the UTF-8 flag (bit 11) on every name that is not plain ASCII, and use `/` as the separator (ASCII reads the same with or without the flag, and common ZIP libraries set it only when needed);
 - use ZIP64 when any size or offset needs it.
 
 Readers MUST reject a package that contains:
