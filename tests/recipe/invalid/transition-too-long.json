@@ -1,0 +1,1 @@
+{ "x-expect": "/layers/0/in/duration_ms", "unbaked": 0, "output": { "kind": "image", "width": 100, "height": 100 }, "assets": {}, "layers": [ { "id": "a", "type": "solid", "color": "#ffffff", "width": 10, "height": 10, "end_ms": 300, "in": { "type": "fade", "duration_ms": 400 } } ] }

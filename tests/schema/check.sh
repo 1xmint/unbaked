@@ -24,5 +24,13 @@ for f in "$root"/tests/schema/invalid/*.json; do
   fi
 done
 
+# Rule samples break only rules the schema cannot express, so the schema must accept them.
+for f in "$root"/tests/recipe/invalid/*.json; do
+  if ! check-jsonschema -q --schemafile "$schema" "$f"; then
+    echo "FAIL: $f should pass the schema (it tests a rule the schema cannot express)"
+    failed=1
+  fi
+done
+
 if [ "$failed" -eq 0 ]; then echo "schema samples ok"; fi
 exit "$failed"

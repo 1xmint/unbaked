@@ -3,7 +3,7 @@
   "$id": "https://raw.githubusercontent.com/1xmint/unbaked/main/schema/recipe.schema.json",
   "title": "Unbaked recipe.json, version 0",
   "description": "Structure of recipe.json (SPEC.md section 4). Passing this schema is necessary but not sufficient. Readers must also check the rules listed in $comment, which JSON Schema cannot express.",
-  "$comment": "Not checked here: ids unique across the whole recipe; asset and font ids point to existing assets of the right kind; asset paths exist in the package and follow section 3.2; packed fonts carry a license; keyframe t_ms strictly increasing; start_ms < end_ms; a layer with out has an end; transition duration no longer than the layer; for image output with duration_ms, at_ms < duration_ms; scale never negative between keys; group nesting at most 32.",
+  "$comment": "Not checked here: ids unique across the whole recipe; asset and font ids point to existing assets of the right kind; asset paths exist in the package and follow section 3.2; packed fonts carry a license; keyframe t_ms strictly increasing; start_ms < end_ms; a layer with out has an end; transition duration no longer than the layer; for image output with duration_ms, at_ms < duration_ms; scale never negative between keys, and no zoom transition whose curve dips below 0; blur sigma above 0 and shadow sigma not negative at any time; group nesting at most 32; no object repeats a key.",
   "type": "object",
   "required": ["unbaked", "output", "assets"],
   "properties": {
