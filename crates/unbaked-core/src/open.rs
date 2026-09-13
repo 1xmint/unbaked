@@ -11,7 +11,7 @@ use crate::json::Problem;
 use crate::mp4::{self, Mp4Error};
 use crate::package::{Limits, Package, PackageError};
 use crate::png::{self, PngError};
-use crate::recipe::{self, AssetSource, OutputKind, Recipe};
+use crate::recipe::{self, OutputKind, Recipe};
 use crate::rules;
 use crate::sniff::{self, AssetKind};
 
@@ -193,19 +193,10 @@ impl Opened {
 
         let recipe_sha256 = sha256_hex(&self.recipe_json);
         let mut assets_sha256 = BTreeMap::new();
-        for asset in recipe.assets.values() {
-            let paths = [
-                match &asset.source {
-                    AssetSource::Path(path) => Some(path),
-                    AssetSource::Ref(_) => None,
-                },
-                asset.license.as_ref().and_then(|l| l.file.as_ref()),
-            ];
-            for path in paths.into_iter().flatten() {
-                // The rules already confirmed every referenced file exists.
-                if let Some(info) = self.files.get(path) {
-                    assets_sha256.insert(path.as_str(), info.sha256.as_str());
-                }
+        for path in bake::referenced_files(&recipe) {
+            // The rules already confirmed every referenced file exists.
+            if let Some(info) = self.files.get(path) {
+                assets_sha256.insert(path, info.sha256.as_str());
             }
         }
         let carrier_fits = match recipe.output.kind {

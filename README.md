@@ -22,12 +22,16 @@ clip.unbaked.mp4     video, or picture + sound
 Early. The format rules are drafted in [SPEC.md](SPEC.md). Why it exists and
 where it is going: [VISION.md](VISION.md).
 
-Files can be checked, unpacked and repacked; nothing renders yet:
+Files can be checked, unpacked, repacked and rendered. Rendering covers still
+images with solid and image layers so far: transforms, opacity, blend modes,
+keyframes and transitions. Groups, masks, effects, text, sound and video come next.
 
 ```
+cargo run -p unbaked-cli -- render poster/ -o poster.unbaked.png
 cargo run -p unbaked-cli -- check poster.unbaked.png --json
-cargo run -p unbaked-cli -- unpack poster.unbaked.png poster/
-cargo run -p unbaked-cli -- pack poster/ --into poster.unbaked.png
+cargo run -p unbaked-cli -- unpack poster.unbaked.png edit/
+cargo run -p unbaked-cli -- pack edit/ --into poster.unbaked.png
+cargo run -p unbaked-cli -- render poster.unbaked.png
 ```
 
 Recipes can be validated with the JSON Schema in
