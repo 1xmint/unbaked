@@ -1,0 +1,25 @@
+{
+  "unbaked": 0,
+  "output": { "kind": "image", "at_ms": 4000, "width": 1920, "height": 1080, "fps": "30000/1001", "duration_ms": 8000 },
+  "assets": {
+    "beach": { "path": "assets/beach.mp4" },
+    "song": { "path": "assets/song.m4a" },
+    "inter": { "path": "assets/Inter.ttf", "license": { "spdx": "OFL-1.1", "file": "assets/OFL.txt" } }
+  },
+  "layers": [
+    { "id": "clip", "type": "video", "asset": "beach", "width": 1920, "trim_start_ms": 2000,
+      "transform": { "scale_x": { "keys": [ { "t_ms": 0, "v": 1, "ease": "ease-in-out" }, { "t_ms": 8000, "v": 1.1 } ] },
+                     "scale_y": { "keys": [ { "t_ms": 0, "v": 1, "ease": [0.25, 0.1, 0.25, 1] }, { "t_ms": 8000, "v": 1.1 } ] },
+                     "anchor_x": 0.5, "anchor_y": 0.5, "x": 960, "y": 540 } },
+    { "id": "caption", "type": "text", "text": "Day one", "font": "inter", "size_px": 72, "color": "#ffffffff",
+      "start_ms": 1000, "end_ms": 6000,
+      "in": { "type": "slide-up", "duration_ms": 400, "ease": "ease-out" },
+      "out": { "type": "fade", "duration_ms": 300 },
+      "transform": { "x": 120, "y": 900 } }
+  ],
+  "audio": [
+    { "id": "music", "asset": "song", "gain_db": { "keys": [ { "t_ms": 0, "v": -6 }, { "t_ms": 7000, "v": -6, "ease": "hold" }, { "t_ms": 7001, "v": -20 } ] },
+      "fade_out_ms": 1000 },
+    { "id": "ambience", "asset": "beach", "trim_start_ms": 2000, "gain_db": -12 }
+  ]
+}

@@ -145,8 +145,23 @@ yet. Rendering it produces a carrier with a fresh `bake.json`.
 | `unbaked` | integer | yes | Spec version. Readers MUST reject versions they do not implement. |
 | `output` | object | yes | Section 4.2 |
 | `assets` | object | yes, may be empty | Asset id → asset, section 4.3 |
-| `layers` | array | yes for `image` and `video`; MUST be absent for `audio` | Visual layers, bottom first, section 4.5 |
-| `audio` | array | MUST be absent for `image` | Audio clips, section 4.7 |
+| `layers` | array | yes for `image` and `video`, optional for `audio` | Visual layers, bottom first, section 4.5 |
+| `audio` | array | no | Audio clips, section 4.7 |
+
+**Scene and output.** `assets`, `layers` and `audio` are the **scene**: what
+exists and when. `output` is the **export**: which file to make from the scene.
+The scene never depends on the output kind:
+
+| `kind` | Uses | Keeps but does not render |
+|---|---|---|
+| `image` | `layers`, drawn at the moment `output.at_ms` | `audio` |
+| `audio` | `audio` | `layers` |
+| `video` | `layers` and `audio` | nothing |
+
+Switching kind means changing `output`, never deleting parts of the scene. Readers
+MUST validate the whole recipe, including parts the kind does not render, so a
+recipe stays valid when switched back. Writers MAY warn when a file carries assets
+its kind does not use.
 
 **Unknown fields.** A renderer that ignores a field it doesn't understand draws
 the wrong picture without any warning. So readers MUST reject any object field
@@ -171,12 +186,21 @@ lists in its `$comment`. Where the schema and this text disagree, this text wins
 | Field | `image` | `audio` | `video` | Meaning |
 |---|---|---|---|---|
 | `kind` | required | required | required | `"image"`, `"audio"` or `"video"` |
-| `width`, `height` | required | absent | required | Canvas size in pixels, 1–16384. For `video`, both MUST be even. |
-| `background` | optional | absent | optional | Color, section 4.4. Default `"#00000000"` for `image`, `"#000000ff"` for `video`. |
-| `fps` | absent | absent | required | Frame rate as a string: `"30"` or `"30000/1001"`. Both numbers are positive integers. |
-| `duration_ms` | absent | required | required | Length in milliseconds, positive integer |
-| `sample_rate` | absent | optional | optional | `44100` or `48000`. Default `48000`. |
-| `channels` | absent | optional | optional | `1` or `2`. Default `2`. |
+| `width`, `height` | required | ignored | required | Canvas size in pixels, 1–16384. For `video`, both MUST be even. |
+| `background` | optional | ignored | optional | Color, section 4.4. Default `"#00000000"` for `image`, `"#000000ff"` for `video`. |
+| `at_ms` | optional | ignored | ignored | The moment of the scene an `image` shows. Integer ≥ 0, default `0`. |
+| `fps` | ignored | ignored | required | Frame rate as a string: `"30"` or `"30000/1001"`. Both numbers are positive integers. |
+| `duration_ms` | optional | required | required | Length of the scene in milliseconds, positive integer |
+| `sample_rate` | ignored | optional | optional | `44100` or `48000`. Default `48000`. |
+| `channels` | ignored | optional | optional | `1` or `2`. Default `2`. |
+
+*Ignored* fields MAY be present and MUST still be valid. They are kept so that
+changing `kind` is a one-word edit: a video recipe becomes a still of its 4-second
+mark with `"kind": "image", "at_ms": 4000`, and becomes a video again by changing
+`kind` back.
+
+For `image`, when `duration_ms` is present, `at_ms` MUST be less than it. When it
+is absent, the scene has no end: top-level layers without `end_ms` never end.
 
 For `video` with an opaque background, the renderer SHOULD treat the final frame
 as opaque. H.264 output has no alpha.
@@ -250,19 +274,20 @@ outward.
 |---|---|---|---|---|
 | `id` | string | yes | | Unique id |
 | `type` | string | yes | | `image`, `video`, `text`, `solid` or `group` |
-| `start_ms` | integer | no | `0` | First visible time, from the parent's start (`video` only) |
-| `end_ms` | integer | no | parent's end | Visible until, exclusive, from the parent's start (`video` only) |
+| `start_ms` | integer | no | `0` | First visible time, from the parent's start |
+| `end_ms` | integer | no | parent's end | Visible until, exclusive, from the parent's start |
 | `transform` | object | no | identity | Section 4.4 |
 | `opacity` | animatable | no | `1` | 0–1 |
 | `blend` | string | no | `"normal"` | Section 5.4 |
 | `effects` | array | no | `[]` | Applied in order, section 5.5 |
 | `mask` | object | no | | Section 4.11 |
-| `in`, `out` | object | no | | Transitions, section 4.9 (`video` only) |
+| `in`, `out` | object | no | | Transitions, section 4.9 |
 | `hidden` | boolean | no | `false` | Skipped entirely when `true` |
 
-For `image` output, `start_ms`, `end_ms`, `in`, `out` and keyframe objects MUST
-be absent. For `video` output, `start_ms` MUST be less than `end_ms`. A child is
-never visible outside its parent's visible time.
+When both are given, `start_ms` MUST be less than `end_ms`. A child is never
+visible outside its parent's visible time. A layer with `out` MUST have an end:
+its own `end_ms`, an ancestor's, or `output.duration_ms`. Timing, keyframes and
+transitions mean the same in every output kind; an `image` shows them at `at_ms`.
 
 Type-specific fields:
 
@@ -273,7 +298,7 @@ Type-specific fields:
 | `asset` | yes | Id of an image asset |
 | `width`, `height` | no | Box size in pixels. If one is given, the other follows the image's aspect ratio. If neither is given, the image's own size. |
 
-**`video`** (only in `video` output)
+**`video`** (in `image` output, the frame at `at_ms`)
 
 | Field | Required | Default | Meaning |
 |---|---|---|---|
@@ -519,7 +544,8 @@ Output frame `n` (starting at 0) has time `tₙ = n × den / num` seconds for
 **Absolute times.** A layer's absolute start `S` is its `start_ms` plus the
 absolute start of its parent (a group, or the layer a mask belongs to), and `0`
 at the top level. Its absolute end `E` is `S − start_ms + end_ms`, capped at the
-parent's absolute end, with `output.duration_ms` at the top level.
+parent's absolute end, with `output.duration_ms` at the top level (no end for an
+`image` without `duration_ms`).
 
 A layer is visible on frame `n` when `S ≤ 1000·tₙ < E`. Compare with integer
 arithmetic: `S × num ≤ 1000 × n × den < E × num`.
@@ -531,7 +557,9 @@ is `E − S`.
 For a visible video layer, the source time is `s = t + trim_start_ms` ms. The
 renderer shows the source frame with the greatest presentation time ≤ `s`.
 
-For `image` output, there is a single frame and every layer is visible.
+For `image` output, there is a single frame at `tₙ = at_ms / 1000`. The same
+visibility test, local times and source-frame rule apply, compared exactly:
+visible when `S ≤ at_ms < E`.
 
 Source frames are converted from YUV to RGB using the matrix and range the
 stream signals. If none is signalled: BT.709 limited range when the height is

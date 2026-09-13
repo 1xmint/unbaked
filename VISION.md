@@ -24,6 +24,10 @@ What that means in practice:
 - **One way to say each thing.** Every field has one type. Times are whole
   milliseconds with the unit in the name (`start_ms`, `size_px`,
   `rotation_deg`), so there is no guessing between `1m` and `1ms`.
+- **One scene, any export.** The layers and sound describe a scene. A separate
+  `output` says whether to make a picture, a sound file or a video from it.
+  Turning a video into a still of its 4-second mark is a one-word edit, and
+  nothing is lost going back.
 - **Mistakes are caught before rendering.** A published
   [JSON Schema](schema/recipe.schema.json) lets any tool tell an agent exactly
   which field is wrong. Unknown fields are errors, not silently ignored, so a

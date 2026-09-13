@@ -3,7 +3,7 @@
   "$id": "https://raw.githubusercontent.com/1xmint/unbaked/main/schema/recipe.schema.json",
   "title": "Unbaked recipe.json, version 0",
   "description": "Structure of recipe.json (SPEC.md section 4). Passing this schema is necessary but not sufficient. Readers must also check the rules listed in $comment, which JSON Schema cannot express.",
-  "$comment": "Not checked here: ids unique across the whole recipe; asset and font ids point to existing assets of the right kind; asset paths exist in the package and follow section 3.2; packed fonts carry a license; keyframe t_ms strictly increasing; start_ms < end_ms; transition duration no longer than the layer; for image output, start_ms, end_ms, in, out and keyframe objects absent at every depth (only checked on top-level layers here); layers and clips of kind video only in video output; scale never negative between keys; group nesting at most 32.",
+  "$comment": "Not checked here: ids unique across the whole recipe; asset and font ids point to existing assets of the right kind; asset paths exist in the package and follow section 3.2; packed fonts carry a license; keyframe t_ms strictly increasing; start_ms < end_ms; a layer with out has an end; transition duration no longer than the layer; for image output with duration_ms, at_ms < duration_ms; scale never negative between keys; group nesting at most 32.",
   "type": "object",
   "required": ["unbaked", "output", "assets"],
   "properties": {
@@ -24,33 +24,8 @@
   },
   "patternProperties": { "^x-": true },
   "additionalProperties": false,
-  "allOf": [
-    {
-      "if": { "properties": { "output": { "properties": { "kind": { "const": "audio" } } } } },
-      "then": { "not": { "required": ["layers"] } },
-      "else": { "required": ["layers"] }
-    },
-    {
-      "if": { "properties": { "output": { "properties": { "kind": { "const": "image" } } } } },
-      "then": {
-        "not": { "required": ["audio"] },
-        "properties": {
-          "layers": {
-            "items": {
-              "not": {
-                "anyOf": [
-                  { "required": ["start_ms"] },
-                  { "required": ["end_ms"] },
-                  { "required": ["in"] },
-                  { "required": ["out"] }
-                ]
-              }
-            }
-          }
-        }
-      }
-    }
-  ],
+  "if": { "properties": { "output": { "properties": { "kind": { "const": "audio" } } } } },
+  "else": { "required": ["layers"] },
 
   "$defs": {
     "id": {
@@ -86,40 +61,22 @@
           "pattern": "^[1-9][0-9]*(/[1-9][0-9]*)?$",
           "description": "\"30\" or \"30000/1001\""
         },
+        "at_ms": { "$ref": "#/$defs/timeMs", "description": "The moment of the scene an image shows. Default 0." },
         "duration_ms": { "type": "integer", "minimum": 1 },
         "sample_rate": { "enum": [44100, 48000] },
         "channels": { "enum": [1, 2] }
       },
       "patternProperties": { "^x-": true },
       "additionalProperties": false,
+      "$comment": "Fields a kind does not use may stay, so switching kind is a one-word edit. They must still be valid.",
       "allOf": [
         {
           "if": { "properties": { "kind": { "const": "image" } } },
-          "then": {
-            "required": ["width", "height"],
-            "not": {
-              "anyOf": [
-                { "required": ["fps"] },
-                { "required": ["duration_ms"] },
-                { "required": ["sample_rate"] },
-                { "required": ["channels"] }
-              ]
-            }
-          }
+          "then": { "required": ["width", "height"] }
         },
         {
           "if": { "properties": { "kind": { "const": "audio" } } },
-          "then": {
-            "required": ["duration_ms"],
-            "not": {
-              "anyOf": [
-                { "required": ["width"] },
-                { "required": ["height"] },
-                { "required": ["background"] },
-                { "required": ["fps"] }
-              ]
-            }
-          }
+          "then": { "required": ["duration_ms"] }
         },
         {
           "if": { "properties": { "kind": { "const": "video" } } },
