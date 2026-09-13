@@ -1,0 +1,9 @@
+{
+  "unbaked": 0,
+  "output": { "kind": "audio", "duration_ms": 30000, "sample_rate": 44100, "channels": 2 },
+  "assets": { "voice": { "path": "assets/voice.wav" }, "bed": { "path": "assets/bed.flac" } },
+  "audio": [
+    { "id": "vo", "asset": "voice", "start_ms": 500 },
+    { "id": "music", "asset": "bed", "gain_db": -18, "fade_in_ms": 2000, "fade_out_ms": 3000, "muted": false }
+  ]
+}

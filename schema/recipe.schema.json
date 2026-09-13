@@ -1,0 +1,419 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/1xmint/unbaked/main/schema/recipe.schema.json",
+  "title": "Unbaked recipe.json, version 0",
+  "description": "Structure of recipe.json (SPEC.md section 4). Passing this schema is necessary but not sufficient. Readers must also check the rules listed in $comment, which JSON Schema cannot express.",
+  "$comment": "Not checked here: ids unique across the whole recipe; asset and font ids point to existing assets of the right kind; asset paths exist in the package and follow section 3.2; packed fonts carry a license; keyframe t_ms strictly increasing; start_ms < end_ms; transition duration no longer than the layer; for image output, start_ms, end_ms, in, out and keyframe objects absent at every depth (only checked on top-level layers here); layers and clips of kind video only in video output; scale never negative between keys; group nesting at most 32.",
+  "type": "object",
+  "required": ["unbaked", "output", "assets"],
+  "properties": {
+    "unbaked": { "const": 0, "description": "Spec version" },
+    "output": { "$ref": "#/$defs/output" },
+    "assets": {
+      "type": "object",
+      "description": "Asset id -> asset",
+      "propertyNames": { "$ref": "#/$defs/id" },
+      "additionalProperties": { "$ref": "#/$defs/asset" }
+    },
+    "layers": { "$ref": "#/$defs/layerList" },
+    "audio": {
+      "type": "array",
+      "description": "Audio clips, mixed in any order",
+      "items": { "$ref": "#/$defs/audioClip" }
+    }
+  },
+  "patternProperties": { "^x-": true },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "output": { "properties": { "kind": { "const": "audio" } } } } },
+      "then": { "not": { "required": ["layers"] } },
+      "else": { "required": ["layers"] }
+    },
+    {
+      "if": { "properties": { "output": { "properties": { "kind": { "const": "image" } } } } },
+      "then": {
+        "not": { "required": ["audio"] },
+        "properties": {
+          "layers": {
+            "items": {
+              "not": {
+                "anyOf": [
+                  { "required": ["start_ms"] },
+                  { "required": ["end_ms"] },
+                  { "required": ["in"] },
+                  { "required": ["out"] }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$"
+    },
+    "timeMs": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Whole milliseconds. Convert friendly input such as \"1m30s\" to 90000 before writing."
+    },
+    "color": {
+      "type": "string",
+      "pattern": "^#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+      "description": "sRGB #RRGGBB or #RRGGBBAA, not premultiplied"
+    },
+    "packagePath": {
+      "type": "string",
+      "pattern": "^assets(/(?!\\.\\.?(/|$))[^/\\\\]+)+$",
+      "description": "Path inside the package, under assets/, forward slashes, no . or .. segments"
+    },
+
+    "output": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["image", "audio", "video"] },
+        "width": { "type": "integer", "minimum": 1, "maximum": 16384 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 16384 },
+        "background": { "$ref": "#/$defs/color" },
+        "fps": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*(/[1-9][0-9]*)?$",
+          "description": "\"30\" or \"30000/1001\""
+        },
+        "duration_ms": { "type": "integer", "minimum": 1 },
+        "sample_rate": { "enum": [44100, 48000] },
+        "channels": { "enum": [1, 2] }
+      },
+      "patternProperties": { "^x-": true },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "image" } } },
+          "then": {
+            "required": ["width", "height"],
+            "not": {
+              "anyOf": [
+                { "required": ["fps"] },
+                { "required": ["duration_ms"] },
+                { "required": ["sample_rate"] },
+                { "required": ["channels"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "audio" } } },
+          "then": {
+            "required": ["duration_ms"],
+            "not": {
+              "anyOf": [
+                { "required": ["width"] },
+                { "required": ["height"] },
+                { "required": ["background"] },
+                { "required": ["fps"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "video" } } },
+          "then": {
+            "required": ["width", "height", "fps", "duration_ms"],
+            "properties": {
+              "width": { "multipleOf": 2 },
+              "height": { "multipleOf": 2 }
+            }
+          }
+        }
+      ]
+    },
+
+    "license": {
+      "type": "object",
+      "properties": {
+        "spdx": {
+          "type": "string",
+          "pattern": "^([A-Za-z0-9.+-]+|LicenseRef-[A-Za-z0-9.-]+)$",
+          "description": "SPDX licence id, or LicenseRef-<name>"
+        },
+        "file": { "$ref": "#/$defs/packagePath", "description": "Licence text in the package" }
+      },
+      "minProperties": 1,
+      "anyOf": [{ "required": ["spdx"] }, { "required": ["file"] }],
+      "if": { "properties": { "spdx": { "enum": ["OFL-1.1", "Apache-2.0"] } }, "required": ["spdx"] },
+      "then": { "required": ["file"] },
+      "patternProperties": { "^x-": true },
+      "additionalProperties": false
+    },
+
+    "asset": {
+      "type": "object",
+      "properties": {
+        "path": { "$ref": "#/$defs/packagePath" },
+        "ref": {
+          "type": "object",
+          "description": "A font that is not packed. Re-rendering needs a local font file with this exact SHA-256.",
+          "required": ["family", "sha256"],
+          "properties": {
+            "family": { "type": "string", "minLength": 1 },
+            "style": { "type": "string" },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          },
+          "patternProperties": { "^x-": true },
+          "additionalProperties": false
+        },
+        "license": { "$ref": "#/$defs/license" }
+      },
+      "oneOf": [{ "required": ["path"] }, { "required": ["ref"] }],
+      "patternProperties": { "^x-": true },
+      "additionalProperties": false
+    },
+
+    "ease": {
+      "oneOf": [
+        { "enum": ["linear", "hold", "ease", "ease-in", "ease-out", "ease-in-out"] },
+        {
+          "type": "array",
+          "description": "cubic-bezier [x1, y1, x2, y2]",
+          "prefixItems": [
+            { "type": "number", "minimum": 0, "maximum": 1 },
+            { "type": "number" },
+            { "type": "number", "minimum": 0, "maximum": 1 },
+            { "type": "number" }
+          ],
+          "minItems": 4,
+          "maxItems": 4
+        }
+      ]
+    },
+
+    "keyframes": {
+      "type": "object",
+      "required": ["keys"],
+      "properties": {
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["t_ms", "v"],
+            "properties": {
+              "t_ms": { "$ref": "#/$defs/timeMs" },
+              "v": { "type": "number" },
+              "ease": { "$ref": "#/$defs/ease" }
+            },
+            "patternProperties": { "^x-": true },
+            "additionalProperties": false
+          }
+        }
+      },
+      "patternProperties": { "^x-": true },
+      "additionalProperties": false
+    },
+
+    "animatable": {
+      "description": "A plain number, or a keyframe object",
+      "oneOf": [{ "type": "number" }, { "$ref": "#/$defs/keyframes" }]
+    },
+
+    "transform": {
+      "type": "object",
+      "properties": {
+        "x": { "$ref": "#/$defs/animatable" },
+        "y": { "$ref": "#/$defs/animatable" },
+        "anchor_x": { "$ref": "#/$defs/animatable" },
+        "anchor_y": { "$ref": "#/$defs/animatable" },
+        "scale_x": { "$ref": "#/$defs/animatable" },
+        "scale_y": { "$ref": "#/$defs/animatable" },
+        "rotation_deg": { "$ref": "#/$defs/animatable" }
+      },
+      "patternProperties": { "^x-": true },
+      "additionalProperties": false
+    },
+
+    "transition": {
+      "type": "object",
+      "required": ["type", "duration_ms"],
+      "properties": {
+        "type": { "enum": ["fade", "slide-left", "slide-right", "slide-up", "slide-down", "zoom"] },
+        "duration_ms": { "type": "integer", "minimum": 1 },
+        "ease": {
+          "$ref": "#/$defs/ease",
+          "not": { "const": "hold" }
+        }
+      },
+      "patternProperties": { "^x-": true },
+      "additionalProperties": false
+    },
+
+    "effect": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["blur", "shadow", "adjust"] }
+      },
+      "patternProperties": { "^x-": true },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "blur" } } },
+          "then": {
+            "required": ["sigma"],
+            "properties": { "sigma": { "$ref": "#/$defs/animatable" } }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "shadow" } } },
+          "then": {
+            "properties": {
+              "dx": { "$ref": "#/$defs/animatable" },
+              "dy": { "$ref": "#/$defs/animatable" },
+              "sigma": { "$ref": "#/$defs/animatable" },
+              "color": { "$ref": "#/$defs/color" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "adjust" } } },
+          "then": {
+            "properties": {
+              "brightness": { "$ref": "#/$defs/animatable" },
+              "contrast": { "$ref": "#/$defs/animatable" },
+              "saturation": { "$ref": "#/$defs/animatable" }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+
+    "mask": {
+      "type": "object",
+      "required": ["layers"],
+      "properties": {
+        "layers": { "$ref": "#/$defs/layerList" },
+        "mode": { "enum": ["alpha", "luminance"] },
+        "invert": { "type": "boolean" }
+      },
+      "patternProperties": { "^x-": true },
+      "additionalProperties": false
+    },
+
+    "layerList": {
+      "type": "array",
+      "description": "Visual layers, bottom first",
+      "items": { "$ref": "#/$defs/layer" }
+    },
+
+    "boxSize": { "type": "number", "exclusiveMinimum": 0 },
+
+    "layer": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "type": { "enum": ["image", "video", "text", "solid", "group"] },
+        "start_ms": { "$ref": "#/$defs/timeMs" },
+        "end_ms": { "$ref": "#/$defs/timeMs" },
+        "transform": { "$ref": "#/$defs/transform" },
+        "opacity": { "$ref": "#/$defs/animatable" },
+        "blend": {
+          "enum": [
+            "normal", "multiply", "screen", "overlay", "darken", "lighten",
+            "color-dodge", "color-burn", "hard-light", "soft-light",
+            "difference", "exclusion"
+          ]
+        },
+        "effects": { "type": "array", "items": { "$ref": "#/$defs/effect" } },
+        "mask": { "$ref": "#/$defs/mask" },
+        "in": { "$ref": "#/$defs/transition" },
+        "out": { "$ref": "#/$defs/transition" },
+        "hidden": { "type": "boolean" }
+      },
+      "patternProperties": { "^x-": true },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "image" } } },
+          "then": {
+            "required": ["asset"],
+            "properties": {
+              "asset": { "$ref": "#/$defs/id" },
+              "width": { "$ref": "#/$defs/boxSize" },
+              "height": { "$ref": "#/$defs/boxSize" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "video" } } },
+          "then": {
+            "required": ["asset"],
+            "properties": {
+              "asset": { "$ref": "#/$defs/id" },
+              "width": { "$ref": "#/$defs/boxSize" },
+              "height": { "$ref": "#/$defs/boxSize" },
+              "trim_start_ms": { "$ref": "#/$defs/timeMs" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "text" } } },
+          "then": {
+            "required": ["text", "font", "size_px"],
+            "properties": {
+              "text": { "type": "string" },
+              "font": { "$ref": "#/$defs/id" },
+              "size_px": { "type": "number", "exclusiveMinimum": 0 },
+              "color": { "$ref": "#/$defs/color" },
+              "line_height": { "type": "number", "exclusiveMinimum": 0 },
+              "align": { "enum": ["left", "center", "right"] },
+              "box_width": { "type": "number", "exclusiveMinimum": 0 },
+              "font_index": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "solid" } } },
+          "then": {
+            "required": ["color", "width", "height"],
+            "properties": {
+              "color": { "$ref": "#/$defs/color" },
+              "width": { "$ref": "#/$defs/boxSize" },
+              "height": { "$ref": "#/$defs/boxSize" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "group" } } },
+          "then": {
+            "required": ["layers"],
+            "properties": { "layers": { "$ref": "#/$defs/layerList" } }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+
+    "audioClip": {
+      "type": "object",
+      "required": ["id", "asset"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "asset": { "$ref": "#/$defs/id" },
+        "start_ms": { "$ref": "#/$defs/timeMs" },
+        "trim_start_ms": { "$ref": "#/$defs/timeMs" },
+        "duration_ms": { "type": "integer", "minimum": 1 },
+        "gain_db": { "$ref": "#/$defs/animatable" },
+        "fade_in_ms": { "$ref": "#/$defs/timeMs" },
+        "fade_out_ms": { "$ref": "#/$defs/timeMs" },
+        "muted": { "type": "boolean" }
+      },
+      "patternProperties": { "^x-": true },
+      "additionalProperties": false
+    }
+  }
+}

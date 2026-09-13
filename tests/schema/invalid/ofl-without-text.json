@@ -1,0 +1,1 @@
+{ "unbaked": 0, "output": { "kind": "image", "width": 1, "height": 1 }, "layers": [], "assets": { "f": { "path": "assets/f.ttf", "license": { "spdx": "OFL-1.1" } } } }

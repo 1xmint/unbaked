@@ -161,6 +161,11 @@ inside groups and masks.
 the unit is in its name (`_ms`, `_px`, `_deg`, `_db`). Tools that accept
 friendlier input such as `"1m30s"` convert it before writing the recipe.
 
+**Schema.** [`schema/recipe.schema.json`](schema/recipe.schema.json) (JSON Schema
+2020-12) describes this section's structure. A recipe that fails the schema is
+invalid. Passing it is not enough: readers MUST also check the rules the schema
+lists in its `$comment`. Where the schema and this text disagree, this text wins.
+
 ### 4.2 output
 
 | Field | `image` | `audio` | `video` | Meaning |
