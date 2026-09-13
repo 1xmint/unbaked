@@ -4,6 +4,7 @@ pub mod bake;
 pub mod json;
 pub mod mp4;
 mod open;
+pub mod pack;
 pub mod package;
 pub mod png;
 pub mod recipe;

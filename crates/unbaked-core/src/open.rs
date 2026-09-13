@@ -227,7 +227,7 @@ impl Opened {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::bake::Change;
     use std::io::{Cursor, Write};
@@ -242,7 +242,7 @@ mod tests {
     }
 
     /// A valid 1x1 RGBA PNG holding one pixel.
-    fn png_pixel(rgba: [u8; 4]) -> Vec<u8> {
+    pub(crate) fn png_pixel(rgba: [u8; 4]) -> Vec<u8> {
         let raw = [0, rgba[0], rgba[1], rgba[2], rgba[3]];
         let (mut a, mut b) = (1u32, 0u32);
         for byte in raw {
