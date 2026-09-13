@@ -1,5 +1,6 @@
 //! Read and write Unbaked media files.
 
+pub mod mp4;
 pub mod png;
 
 /// The spec version this crate implements.
