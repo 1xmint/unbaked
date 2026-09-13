@@ -1,0 +1,28 @@
+{
+  "unbaked": 0,
+  "output": { "kind": "image", "width": 1080, "height": 1350, "background": "#101820ff" },
+  "assets": {
+    "photo": { "path": "assets/photo.jpg" },
+    "inter": { "path": "assets/fonts/Inter-Regular.ttf", "license": { "spdx": "OFL-1.1", "file": "assets/fonts/OFL.txt" } },
+    "brand": { "ref": { "family": "Brand Sans", "style": "Bold", "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" } }
+  },
+  "layers": [
+    { "id": "bg", "type": "image", "asset": "photo", "width": 1080,
+      "effects": [ { "type": "adjust", "brightness": 0.8, "saturation": 1.2 } ] },
+    { "id": "card", "type": "group", "opacity": 0.95, "layers": [
+      { "id": "panel", "type": "solid", "color": "#000000aa", "width": 900, "height": 300,
+        "transform": { "x": 540, "y": 1100, "anchor_x": 0.5, "anchor_y": 0.5 } },
+      { "id": "title", "type": "text", "text": "Summer\nSale", "font": "brand", "size_px": 96,
+        "color": "#ffffffff", "align": "center", "box_width": 860,
+        "transform": { "x": 540, "y": 1100, "anchor_x": 0.5, "anchor_y": 0.5 },
+        "effects": [ { "type": "shadow", "dy": 4, "sigma": 6 } ] }
+    ] },
+    { "id": "vignette", "type": "solid", "color": "#000000ff", "width": 1080, "height": 1350, "blend": "multiply",
+      "mask": { "mode": "luminance", "invert": true, "layers": [
+        { "id": "spot", "type": "solid", "color": "#ffffffff", "width": 800, "height": 800,
+          "transform": { "x": 540, "y": 675, "anchor_x": 0.5, "anchor_y": 0.5 },
+          "effects": [ { "type": "blur", "sigma": 120 } ] }
+      ] } }
+  ],
+  "x-editor": { "note": "extension fields are ignored" }
+}

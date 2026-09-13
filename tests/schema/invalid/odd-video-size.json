@@ -1,0 +1,1 @@
+{ "unbaked": 0, "assets": { "f": { "path": "assets/f.ttf", "license": { "spdx": "OFL-1.1", "file": "assets/OFL.txt" } } }, "output": { "kind": "video", "width": 101, "height": 100, "fps": "30", "duration_ms": 1000 }, "layers": [] }

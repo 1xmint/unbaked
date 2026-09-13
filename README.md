@@ -20,7 +20,11 @@ clip.unbaked.mp4     video, or picture + sound
 ## Status
 
 Early design. Nothing here is usable yet. The format rules are being drafted in
-[SPEC.md](SPEC.md).
+[SPEC.md](SPEC.md). Why it exists and where it is going: [VISION.md](VISION.md).
+
+Recipes can be validated with the JSON Schema in
+[schema/recipe.schema.json](schema/recipe.schema.json). It catches most mistakes
+before rendering; the rules it cannot express are listed in its `$comment`.
 
 ## How it works
 

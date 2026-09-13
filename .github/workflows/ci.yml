@@ -48,10 +48,22 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test --workspace
 
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet check-jsonschema==0.38.0
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+      - run: bash tests/schema/check.sh
+
   # Single required check for branch protection, so the job list can change freely.
   ci-ok:
     if: always()
-    needs: [lint, test]
+    needs: [lint, test, schema]
     runs-on: ubuntu-latest
     steps:
       - run: |
