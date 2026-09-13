@@ -77,7 +77,7 @@ impl Pixmap {
     pub fn to_rgba8(&self) -> Vec<u8> {
         let quantise = |v: f32| (v * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8;
         let mut out = Vec::with_capacity(self.data.len());
-        for px in self.data.chunks_exact(4) {
+        for px in self.data.as_chunks::<4>().0 {
             let a = px[3];
             if a <= 0.0 {
                 out.extend_from_slice(&[0, 0, 0, 0]);
@@ -157,8 +157,10 @@ pub fn decode_png(bytes: &[u8], max_pixels: u64) -> Result<Pixmap, String> {
             width,
             height,
             channels,
-            buf.chunks_exact(2)
-                .map(|s| f32::from(u16::from_be_bytes([s[0], s[1]])) / 65535.0),
+            buf.as_chunks::<2>()
+                .0
+                .iter()
+                .map(|s| f32::from(u16::from_be_bytes(*s)) / 65535.0),
         ),
         _ => from_samples(
             width,
