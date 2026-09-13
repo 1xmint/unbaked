@@ -19,8 +19,16 @@ clip.unbaked.mp4     video, or picture + sound
 
 ## Status
 
-Early design. Nothing here is usable yet. The format rules are being drafted in
-[SPEC.md](SPEC.md). Why it exists and where it is going: [VISION.md](VISION.md).
+Early. The format rules are drafted in [SPEC.md](SPEC.md). Why it exists and
+where it is going: [VISION.md](VISION.md).
+
+Files can be checked, unpacked and repacked; nothing renders yet:
+
+```
+cargo run -p unbaked-cli -- check poster.unbaked.png --json
+cargo run -p unbaked-cli -- unpack poster.unbaked.png poster/
+cargo run -p unbaked-cli -- pack poster/ --into poster.unbaked.png
+```
 
 Recipes can be validated with the JSON Schema in
 [schema/recipe.schema.json](schema/recipe.schema.json). It catches most mistakes

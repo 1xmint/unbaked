@@ -1,0 +1,20 @@
+[package]
+name = "unbaked-cli"
+description = "Command-line tool to check, unpack and pack Unbaked media files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "unbaked"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+lexopt = "0.3.2"
+serde_json = "1.0.151"
+unbaked-core = { path = "../unbaked-core" }
