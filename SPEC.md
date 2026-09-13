@@ -108,8 +108,9 @@ Writers MUST:
 - use ZIP64 when any size or offset needs it.
 
 Readers MUST reject a package that contains:
-- an entry name that is empty, starts with `/`, contains `\`, contains a `..` or `.` path segment, contains a drive letter (`C:`), or contains a NUL;
-- two entries whose names are equal after Unicode NFC normalisation and case folding (Windows and macOS treat those as the same file);
+- an entry name that is not valid UTF-8, is empty, starts with `/`, contains `\`, contains an empty, `.` or `..` path segment, contains `:` (drive letters such as `C:`, and Windows alternate streams), or contains a NUL (a single trailing `/` marks a folder and is allowed);
+- two entries whose names are equal after Unicode NFC normalisation and full case folding (Windows and macOS treat those as the same file);
+- a file whose path is also used as a folder by another entry;
 - encryption, compression methods other than 0 or 8, symbolic links, or multi-disk archives;
 - an entry whose decompressed size does not match its declared size.
 
