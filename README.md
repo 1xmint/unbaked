@@ -23,8 +23,9 @@ Early. The format rules are drafted in [SPEC.md](SPEC.md). Why it exists and
 where it is going: [VISION.md](VISION.md).
 
 Files can be checked, unpacked, repacked and rendered. Rendering covers still
-images with solid and image layers so far: transforms, opacity, blend modes,
-keyframes and transitions. Groups, masks, effects, text, sound and video come next.
+images with solid, image and group layers so far: masks, blur, shadow and
+adjust effects, transforms, opacity, blend modes, keyframes and transitions.
+Text, sound and video come next.
 
 ```
 cargo run -p unbaked-cli -- render poster/ -o poster.unbaked.png
