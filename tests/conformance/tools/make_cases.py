@@ -8,8 +8,14 @@
         Writes the recipe folder the M4A source was rendered from. To replace it:
         `unbaked render DIR -o voice.m4a`, then
         `make_cases.py --voice voice.m4a`.
+
+    python tests/conformance/tools/make_cases.py --bench DIR
+        Writes full-size benchmark recipe folders into DIR instead: a 1024x1024
+        image with text and a blur, a 1920x1080 four-layer image, a 60 s stereo
+        mix of three clips, and a 10 s 1080p video. Render them with
+        `--fonts tests/fonts`.
 """
-import argparse, hashlib, json, math, os, shutil, struct, zlib
+import argparse, array, hashlib, json, math, os, shutil, struct, zlib
 
 repo = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 root = os.path.join(repo, "tests", "conformance")
@@ -117,6 +123,7 @@ def write_voice_recipe(folder):
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("--voice-recipe", metavar="DIR", help="write the M4A source's recipe folder and stop")
 parser.add_argument("--voice", metavar="M4A", help="M4A source to use instead of the committed one")
+parser.add_argument("--bench", metavar="DIR", help="write benchmark recipe folders into DIR and stop")
 args = parser.parse_args()
 
 if args.voice_recipe:
@@ -145,6 +152,93 @@ def keys(*pairs):
         out.append(key)
     return {"keys": out}
 
+
+def long_wav(rate, channels, seconds, freqs):
+    """A long 16-bit WAV of one tone per channel, written quickly."""
+    n = rate * seconds
+    samples = array.array("h", bytes(2 * n * channels))
+    for c, freq in enumerate(freqs):
+        step = 2 * math.pi * freq / rate
+        for k in range(n):
+            samples[k * channels + c] = int(9000 * math.sin(step * k))
+    if samples.itemsize != 2 or struct.pack("=h", 1) != struct.pack("<h", 1):
+        raise SystemExit("needs a little-endian machine")
+    data = samples.tobytes()
+    return (b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE"
+            + b"fmt " + struct.pack("<IHHIIHH", 16, 1, channels, rate, rate * channels * 2, channels * 2, 16)
+            + b"data" + struct.pack("<I", len(data)) + data)
+
+
+def write_bench(folder):
+    font = {"ref": {"family": "Lato", "style": "Regular", "sha256": lato}}
+    benches = {
+        "image-1024-text-blur": ({
+            "output": {"kind": "image", "width": 1024, "height": 1024, "background": "#f4f0e8ff"},
+            "assets": {"lato": font, "gradient": {"path": "assets/gradient.png"}},
+            "layers": [
+                {"id": "photo", "type": "image", "asset": "gradient", "width": 1024,
+                 "transform": at(0, 256), "effects": [{"type": "blur", "sigma": 8}]},
+                {"id": "headline", "type": "text", "text": "Unbaked benchmark: a headline that wraps onto two lines",
+                 "font": "lato", "size_px": 72, "color": "#202020ff", "box_width": 900, "align": "center",
+                 "transform": at(62, 40), "effects": [{"type": "shadow", "dx": 3, "dy": 3, "sigma": 2}]},
+            ],
+        }, {"gradient.png": ASSETS["gradient.png"]}),
+        "image-1080-four-layers": ({
+            "output": {"kind": "image", "width": 1920, "height": 1080},
+            "assets": {"gradient": {"path": "assets/gradient.png"}, "badge": {"path": "assets/badge.png"}},
+            "layers": [
+                {"id": "background", "type": "image", "asset": "gradient", "width": 1920, "height": 1080},
+                solid("tint", "#ff8040c0", 1200, 700, at(360, 190), blend="multiply"),
+                {"id": "pair", "type": "group", "opacity": 0.6, "layers": [
+                    solid("left", "#2040ffff", 500, 500, at(200, 300)),
+                    solid("right", "#40ff80ff", 500, 500, at(450, 420), blend="screen")]},
+                {"id": "badge", "type": "image", "asset": "badge", "width": 400,
+                 "transform": at(1500, 540, anchor_x=0.5, anchor_y=0.5, rotation_deg=20)},
+            ],
+        }, {"gradient.png": ASSETS["gradient.png"], "badge.png": ASSETS["badge.png"]}),
+        "audio-60s-three-clips": ({
+            "output": {"kind": "audio", "duration_ms": 60000, "sample_rate": 48000, "channels": 2},
+            "assets": {"voice": {"path": "assets/voice.wav"}, "music": {"path": "assets/music.wav"},
+                       "effect": {"path": "assets/effect.wav"}},
+            "audio": [
+                {"id": "music", "asset": "music", "gain_db": keys((0, -6), (20000, -18, "ease-in-out"), (40000, -6))},
+                {"id": "voice", "asset": "voice", "start_ms": 18000, "fade_in_ms": 500, "fade_out_ms": 500},
+                {"id": "effect", "asset": "effect", "start_ms": 35000, "gain_db": -3},
+            ],
+        }, {"voice.wav": lambda: long_wav(44100, 1, 25, [220]),
+            "music.wav": lambda: long_wav(48000, 2, 60, [330, 440]),
+            "effect.wav": lambda: long_wav(22050, 1, 25, [880])}),
+        "video-10s-1080p": ({
+            "output": {"kind": "video", "width": 1920, "height": 1080, "fps": "30", "duration_ms": 10000},
+            "assets": {"lato": font, "gradient": {"path": "assets/gradient.png"}, "badge": {"path": "assets/badge.png"}},
+            "layers": [
+                {"id": "background", "type": "image", "asset": "gradient", "width": 1920, "height": 1080},
+                solid("mover", "#ffffffff", 200, 200, {"x": keys((0, 0, "ease-in-out"), (10000, 1720)), "y": 700,
+                                                      "rotation_deg": keys((0, 0), (10000, 720))}),
+                {"id": "badge", "type": "image", "asset": "badge", "width": 300, "start_ms": 2000, "end_ms": 8000,
+                 "in": {"type": "fade", "duration_ms": 500}, "out": {"type": "zoom", "duration_ms": 500},
+                 "transform": at(960, 400, anchor_x=0.5, anchor_y=0.5)},
+                {"id": "title", "type": "text", "text": "Ten seconds at 1080p", "font": "lato", "size_px": 96,
+                 "color": "#ffffffff", "transform": at(120, 80)},
+            ],
+        }, {"gradient.png": ASSETS["gradient.png"], "badge.png": ASSETS["badge.png"]}),
+    }
+    for name, (recipe, assets) in benches.items():
+        target = os.path.join(folder, name)
+        if os.path.exists(target):
+            shutil.rmtree(target)
+        os.makedirs(os.path.join(target, "assets"))
+        for asset, make in assets.items():
+            open(os.path.join(target, "assets", asset), "wb").write(make())
+        with open(os.path.join(target, "recipe.json"), "w", newline="\n") as f:
+            json.dump({"unbaked": 0, **recipe}, f, indent=2)
+            f.write("\n")
+        print("wrote", name)
+
+
+if args.bench:
+    write_bench(args.bench)
+    raise SystemExit(0)
 
 MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten",
          "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion"]

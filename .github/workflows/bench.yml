@@ -1,0 +1,86 @@
+name: Bench
+
+# Release-build speed numbers, never on a developer's machine. They turn the
+# work units `unbaked estimate` reports into time, and time into prices.
+on:
+  schedule:
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/bench.yml
+      - tests/conformance/tools/make_cases.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: release
+      - run: cargo build --release -p unbaked-cli
+      - run: python3 tests/conformance/tools/make_cases.py --bench "$RUNNER_TEMP/bench"
+      - name: Render and estimate
+        run: |
+          python3 - <<'EOF'
+          import json, os, subprocess
+
+          temp = os.environ["RUNNER_TEMP"]
+          binary = "target/release/unbaked"
+          bench = os.path.join(temp, "bench")
+          out = os.path.join(temp, "out")
+          os.makedirs(out, exist_ok=True)
+          extension = {"image": "unbaked.png", "audio": "unbaked.m4a", "video": "unbaked.mp4"}
+
+          def run(*args):
+              done = subprocess.run([binary, *args, "--json"], capture_output=True, text=True)
+              report = json.loads(done.stdout)
+              if done.returncode != 0 or not report["ok"]:
+                  raise SystemExit(f"{' '.join(args)} failed: {done.stdout}{done.stderr}")
+              return report
+
+          rows = []
+          for name in sorted(os.listdir(bench)):
+              case = os.path.join(bench, name)
+              estimate = run("estimate", case)
+              target = os.path.join(out, f"{name}.{extension[estimate['kind']]}")
+              # The fastest of three runs, so a noisy neighbour counts less.
+              times = [run("render", case, "-o", target, "--fonts", "tests/fonts")["elapsed_ms"] for _ in range(3)]
+              rows.append({"case": name, "kind": estimate["kind"], "work_units": estimate["work_units"],
+                           "elapsed_ms": min(times), "runs_ms": times, "bytes": os.path.getsize(target),
+                           "estimate": estimate})
+
+          lines = ["| Case | Kind | Work units | Fastest render (ms) | ms per work unit | Output bytes |",
+                   "|---|---|---:|---:|---:|---:|"]
+          for r in rows:
+              per_unit = r["elapsed_ms"] / r["work_units"]
+              lines.append(f"| `{r['case']}` | {r['kind']} | {r['work_units']} | {r['elapsed_ms']} | {per_unit:.2f} | {r['bytes']} |")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("## Release render times\n\n" + "\n".join(lines) + "\n")
+          with open("bench.json", "w") as f:
+              json.dump(rows, f, indent=2)
+          print("\n".join(lines))
+          EOF
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unbaked-release-linux-x86_64
+          path: |
+            target/release/unbaked
+            bench.json

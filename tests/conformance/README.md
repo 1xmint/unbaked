@@ -50,6 +50,11 @@ python tests/conformance/tools/make_cases.py
 `voice.m4a` is kept, not regenerated. `--voice-recipe DIR` writes the recipe it
 was rendered from; render that and pass the result with `--voice`.
 
+`--bench DIR` writes four full-size jobs instead (a 1024×1024 image with text
+and a blur, a 1920×1080 four-layer image, a 60 s stereo mix of three clips and
+a 10 s 1080p video); `.github/workflows/bench.yml` times them in a release
+build.
+
 `tools/sheet.py OUT SCALE PNG...` stacks PNGs, enlarged, into one image over a
 checkerboard, for looking at expected frames.
 
