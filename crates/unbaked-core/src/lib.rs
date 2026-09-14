@@ -1,6 +1,7 @@
 //! Read and write Unbaked media files.
 
 pub mod bake;
+pub mod edit;
 pub mod json;
 pub mod mp4;
 mod open;
