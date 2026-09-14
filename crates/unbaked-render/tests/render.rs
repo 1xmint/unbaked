@@ -907,3 +907,53 @@ fn webp_decodes_exactly_and_animated_webp_is_refused() {
     animated[4..8].copy_from_slice(&size.to_le_bytes());
     assert!(unbaked_render::image::decode_webp(&animated, 1000).is_err());
 }
+
+fn conformance_package(name: &str) -> pack::Files {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance")
+        .join(name)
+        .join("package");
+    pack::read_folder(&dir, Limits::default()).unwrap()
+}
+
+#[test]
+fn previews_shrink_stills_and_grid_video_frames() {
+    use unbaked_render::preview::{PreviewOptions, listen, preview};
+    let limits = RenderLimits::default();
+    let still = conformance_package("image-blend-modes");
+    let full = preview(&still, &NoFonts, limits, PreviewOptions::default()).unwrap();
+    assert_eq!((full.width, full.height), (48, 32));
+    let small = PreviewOptions {
+        max_edge: 24,
+        ..PreviewOptions::default()
+    };
+    let small = preview(&still, &NoFonts, limits, small).unwrap();
+    assert_eq!((small.width, small.height), (24, 16));
+
+    let video = conformance_package("video-motion");
+    let sheet = PreviewOptions {
+        sheet: Some(4),
+        ..PreviewOptions::default()
+    };
+    let grid = preview(&video, &NoFonts, limits, sheet).unwrap();
+    // Two frames of 48x32 across and down, 4 pixels apart.
+    assert_eq!((grid.width, grid.height), (100, 68));
+    assert_eq!(at(&grid, 49, 10), [51, 51, 51, 255], "the gap");
+    assert_eq!(at(&grid, 0, 0)[3], 255, "video frames are opaque");
+    assert!(preview(&still, &NoFonts, limits, sheet).is_err());
+
+    let sound = conformance_package("audio-mix");
+    assert!(matches!(
+        preview(&sound, &NoFonts, limits, PreviewOptions::default()),
+        Err(RenderError::Unsupported(_))
+    ));
+    let stats = listen(&sound, limits).unwrap();
+    assert_eq!(
+        (stats.duration_ms, stats.sample_rate, stats.channels),
+        (300, 48_000, 2)
+    );
+    assert!(stats.clipped_samples > 0, "the +12 dB clip clips");
+    assert_eq!(stats.peak_dbfs, 0.0);
+    assert_eq!(stats.loudness_dbfs.len(), 1);
+    assert!(listen(&still, limits).is_err());
+}

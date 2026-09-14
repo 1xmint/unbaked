@@ -13,6 +13,7 @@ use unbaked_core::edit::{self, EditError};
 use unbaked_core::json::Problem;
 use unbaked_core::package::Limits;
 use unbaked_core::{Status, open, pack};
+use unbaked_render::preview::{self, PreviewOptions};
 use unbaked_render::{Deadline, RenderError, RenderLimits};
 
 mod fonts;
@@ -45,7 +46,16 @@ Usage:
                                         Fonts the recipe references but does not pack are
                                         looked up by SHA-256 in <dir> and its subfolders.
 
-Limits:
+  unbaked preview <file-or-dir> -o <out.png> [--at-ms <n>] [--max-edge <n>] [--sheet <n>]
+                [--fonts <dir>] [limits] [--json]
+                                        Draw one moment of an image or video recipe as a plain
+                                        PNG, longest edge at most 1024 unless --max-edge is
+                                        given. --sheet: a grid of n evenly spaced video frames.
+  unbaked listen <file-or-dir> [limits] [--json]
+                                        Mix the sound and describe it: length, peak level,
+                                        clipped samples, loudness per 500 ms, silent stretches.
+
+Limits (render, preview and listen):
   --time-limit-ms <n>                   Stop once the work has run this long
   --max-pixels <n>                      Most pixels in any one image buffer
   --max-samples <n>                     Most samples per channel in any one sound buffer
@@ -202,13 +212,17 @@ fn run() -> Result<u8, Fail> {
     let mut license: Option<PathBuf> = None;
     let mut limits = RenderLimits::default();
     let mut time_limit_ms: Option<u64> = None;
-    let limited = command == "render";
+    let limited = matches!(command.as_str(), "render" | "preview" | "listen");
+    let mut options = PreviewOptions::default();
     while let Some(arg) = args.next()? {
         match arg {
             Value(v) => positional.push(v),
-            Long("json") if matches!(command.as_str(), "check" | "render" | "edit" | "add") => {
+            Long("json") if command != "recipe" && command != "unpack" && command != "pack" => {
                 json_output = true
             }
+            Long("at-ms") if command == "preview" => options.at_ms = Some(args.value()?.parse()?),
+            Long("max-edge") if command == "preview" => options.max_edge = args.value()?.parse()?,
+            Long("sheet") if command == "preview" => options.sheet = Some(args.value()?.parse()?),
             Long("patch") if command == "edit" => patch = Some(args.value()?.into()),
             Long("id") if command == "add" => id = Some(args.value()?.string()?),
             Long("license") if command == "add" => license = Some(args.value()?.into()),
@@ -218,11 +232,16 @@ fn run() -> Result<u8, Fail> {
             Long("max-frames") if limited => limits.max_frames = args.value()?.parse()?,
             Long("into") if command == "pack" => into = Some(args.value()?.into()),
             Short('o') | Long("output")
-                if matches!(command.as_str(), "pack" | "render" | "edit" | "add") =>
+                if matches!(
+                    command.as_str(),
+                    "pack" | "render" | "edit" | "add" | "preview"
+                ) =>
             {
                 out = Some(args.value()?.into())
             }
-            Long("fonts") if command == "render" => font_dir = Some(args.value()?.into()),
+            Long("fonts") if command == "render" || command == "preview" => {
+                font_dir = Some(args.value()?.into())
+            }
             Long("help") | Short('h') => {
                 print!("{HELP}");
                 return Ok(0);
@@ -284,6 +303,94 @@ fn run() -> Result<u8, Fail> {
             let changed = edit::add_asset(&files, &id, &media, license).map_err(edit_fail)?;
             save(&paths[0], &files, &changed, out.as_deref(), json_output)
         }
+        "preview" => {
+            limits.deadline = time_limit_ms.map(Deadline::after_ms);
+            let input = &wanted(1)?[0];
+            let out = out.ok_or_else(|| Fail::Usage("preview needs -o <out.png>".into()))?;
+            let started = Instant::now();
+            let files = load(input)?;
+            let fonts = font_source(font_dir)?;
+            let pixels = preview::preview(&files, fonts.as_ref(), limits, options)
+                .map_err(|e| render_fail(input, e))?;
+            let png =
+                unbaked_render::image::encode_png(pixels.width, pixels.height, &pixels.to_rgba8())
+                    .map_err(|e| Fail::Render("encode", e))?;
+            write_replacing(&out, &png)?;
+            if json_output {
+                print_json(&json!({
+                    "ok": true,
+                    "output": out.display().to_string(),
+                    "width": pixels.width,
+                    "height": pixels.height,
+                    "elapsed_ms": started.elapsed().as_millis() as u64,
+                }));
+            } else {
+                eprintln!(
+                    "wrote {} ({}x{})",
+                    out.display(),
+                    pixels.width,
+                    pixels.height
+                );
+            }
+            Ok(0)
+        }
+        "listen" => {
+            limits.deadline = time_limit_ms.map(Deadline::after_ms);
+            let input = &wanted(1)?[0];
+            let files = load(input)?;
+            let stats = preview::listen(&files, limits).map_err(|e| render_fail(input, e))?;
+            // Minus infinity (silence) has no JSON number; it becomes null.
+            let level = |db: f64| {
+                if db.is_finite() {
+                    json!((db * 10.0).round() / 10.0)
+                } else {
+                    Json::Null
+                }
+            };
+            let report = json!({
+                "ok": true,
+                "duration_ms": stats.duration_ms,
+                "sample_rate": stats.sample_rate,
+                "channels": stats.channels,
+                "peak_dbfs": level(stats.peak_dbfs),
+                "clipped_samples": stats.clipped_samples,
+                "window_ms": preview::WINDOW_MS,
+                "loudness_dbfs": stats.loudness_dbfs.iter().map(|&db| level(db)).collect::<Vec<_>>(),
+                "silences": stats.silences.iter().map(|s| json!({"start_ms": s.start_ms, "end_ms": s.end_ms})).collect::<Vec<_>>(),
+            });
+            if json_output {
+                print_json(&report);
+            } else {
+                let text = |v: &Json| {
+                    if v.is_null() {
+                        "silent".to_owned()
+                    } else {
+                        format!("{v} dBFS")
+                    }
+                };
+                println!(
+                    "{} ms, {} Hz, {} channel(s)",
+                    stats.duration_ms, stats.sample_rate, stats.channels
+                );
+                println!(
+                    "peak {}, {} clipped samples",
+                    text(&report["peak_dbfs"]),
+                    stats.clipped_samples
+                );
+                for (i, v) in report["loudness_dbfs"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    println!("  {:>6} ms  {}", i as u64 * preview::WINDOW_MS, text(v));
+                }
+                for s in &stats.silences {
+                    println!("silent {}-{} ms", s.start_ms, s.end_ms);
+                }
+            }
+            Ok(0)
+        }
         "render" => {
             // The clock starts once the arguments are read.
             limits.deadline = time_limit_ms.map(Deadline::after_ms);
@@ -307,11 +414,6 @@ fn render(
     json_output: bool,
 ) -> Result<u8, Fail> {
     let started = Instant::now();
-    if let Some(dir) = &font_dir
-        && !dir.is_dir()
-    {
-        return Err(Fail::Io(format!("{}: not a folder", dir.display())));
-    }
     let (files, out) = if input.is_dir() {
         let out = out.ok_or_else(|| Fail::Usage("render of a folder needs -o <out>".into()))?;
         let files = pack::read_folder(input, Limits::default()).map_err(|e| match e {
@@ -322,10 +424,7 @@ fn render(
     } else {
         (opened_files(input)?, out.unwrap_or(input))
     };
-    let fonts: Box<dyn unbaked_render::FontSource> = match font_dir {
-        Some(dir) => Box::new(fonts::FontFolder::new(dir)),
-        None => Box::new(unbaked_render::NoFonts),
-    };
+    let fonts = font_source(font_dir)?;
     let file = unbaked_render::render(&files, fonts.as_ref(), limits)
         .map_err(|e| render_fail(input, e))?;
     write_replacing(out, &file)?;
@@ -354,6 +453,17 @@ fn edit_fail(e: EditError) -> Fail {
         ),
         EditError::Asset(message) => Fail::Render("unsupported", message),
     }
+}
+
+/// Fonts looked up by SHA-256 in a folder, or none.
+fn font_source(font_dir: Option<PathBuf>) -> Result<Box<dyn unbaked_render::FontSource>, Fail> {
+    Ok(match font_dir {
+        Some(dir) if !dir.is_dir() => {
+            return Err(Fail::Io(format!("{}: not a folder", dir.display())));
+        }
+        Some(dir) => Box::new(fonts::FontFolder::new(dir)),
+        None => Box::new(unbaked_render::NoFonts),
+    })
 }
 
 /// The package of an Unbaked file, or of a folder in the directory form.
@@ -444,8 +554,10 @@ fn check(path: &Path, json_output: bool) -> Result<u8, Fail> {
         Status::Invalid { .. } => 2,
     };
     if json_output {
-        let mut report = status_json(&status);
-        report["ok"] = true.into();
+        let mut report = json!({ "ok": true });
+        if let (Some(all), Json::Object(fields)) = (report.as_object_mut(), status_json(&status)) {
+            all.extend(fields);
+        }
         print_json(&report);
     } else {
         print!("{}", status_text(&status));
