@@ -498,3 +498,18 @@ fn preview_and_listen_describe_a_recipe() {
     assert_eq!(out.status.code(), Some(3), "{out:?}");
     assert_eq!(json(&out)["error"]["kind"], "unsupported");
 }
+
+#[test]
+fn estimate_reports_sizes_before_rendering() {
+    let cases = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance");
+    let out = unbaked(&[&"estimate", &cases.join("video-motion/package"), &"--json"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let report = json(&out);
+    assert_eq!(report["kind"], "video");
+    assert_eq!(report["frames"], 10);
+    assert!(report["work_units"].as_u64().unwrap() >= 1);
+
+    let out = unbaked(&[&"estimate", &cases.join("audio-mono/package")]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("kind: audio"));
+}

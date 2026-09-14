@@ -315,6 +315,75 @@ fn decode_mp4(bytes: &[u8], max_samples: u64, deadline: Option<Deadline>) -> Res
     })
 }
 
+/// A sound source's length, read from its headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Length {
+    pub rate: u32,
+    pub channels: u32,
+    /// Samples per channel. Where the header does not say, a guess from the
+    /// file size at 32 kbit/s, which overstates most files.
+    pub frames: u64,
+}
+
+/// About how many kernel taps resampling reads per sample of the longer side.
+pub const RESAMPLE_TAPS: u64 = 34;
+
+/// The length of an audio file or of an MP4's first sound track, without decoding it.
+pub fn length(bytes: &[u8], max_samples: u64) -> Result<Length, String> {
+    let head = &bytes[..bytes.len().min(sniff::HEADER_LEN)];
+    match sniff::detect(head) {
+        Some(AssetKind::Mp4) => {
+            let movie = mp4::read(bytes, max_samples)?;
+            let track = movie
+                .tracks
+                .iter()
+                .find(|t| &t.handler == b"soun")
+                .ok_or("the file has no sound track")?;
+            // An audio sample entry: 16 bytes, then the channel count.
+            let channels = track
+                .entry
+                .body
+                .get(16..18)
+                .map_or(2, |b| u32::from(u16::from_be_bytes([b[0], b[1]])));
+            Ok(Length {
+                rate: track.timescale,
+                channels: channels.clamp(1, 2),
+                frames: track.samples.len() as u64 * 1024,
+            })
+        }
+        Some(AssetKind::Mp3 | AssetKind::Wav | AssetKind::Flac) => {
+            check_wav_channels(bytes)?;
+            let source = MediaSourceStream::new(
+                Box::new(Cursor::new(bytes)),
+                MediaSourceStreamOptions::default(),
+            );
+            let reader = symphonia::default::get_probe()
+                .probe(
+                    &Hint::new(),
+                    source,
+                    FormatOptions::default(),
+                    MetadataOptions::default(),
+                )
+                .map_err(|e| e.to_string())?;
+            let track = reader
+                .first_track(TrackType::Audio)
+                .ok_or("no sound track")?;
+            let Some(CodecParameters::Audio(params)) = &track.codec_params else {
+                return Err("no sound track".into());
+            };
+            let rate = params.sample_rate.unwrap_or(48_000);
+            let channels = params.channels.as_ref().map_or(2, |c| c.count() as u32);
+            let guess = bytes.len() as u64 * 8 * u64::from(rate) / 32_000;
+            Ok(Length {
+                rate,
+                channels: channels.clamp(1, 2),
+                frames: track.num_frames.unwrap_or(guess),
+            })
+        }
+        _ => Err("not an audio file".into()),
+    }
+}
+
 /// Zero crossings of the resampling kernel on each side.
 const SINC_ZEROS: f64 = 16.0;
 

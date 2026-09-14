@@ -957,3 +957,53 @@ fn previews_shrink_stills_and_grid_video_frames() {
     assert_eq!(stats.loudness_dbfs.len(), 1);
     assert!(listen(&still, limits).is_err());
 }
+
+#[test]
+fn estimates_read_sizes_from_the_recipe_and_headers() {
+    use unbaked_core::recipe::OutputKind;
+    use unbaked_render::estimate::estimate;
+
+    let effects = estimate(&conformance_package("image-effects")).unwrap();
+    assert_eq!(effects.kind, OutputKind::Image);
+    assert_eq!((effects.canvas_pixels, effects.frames), (64 * 40, 1));
+    // Five top-level layers and a group of two; five blurs or shadows and one group buffer.
+    assert_eq!(
+        (effects.layers, effects.blurs, effects.extra_buffers),
+        (7, 5, 11)
+    );
+    assert_eq!(effects.max_blur_radius, 6, "sigma 2 on the group");
+    assert_eq!(effects.image_pixels, 8 * 8 + 48 * 32);
+    assert_eq!(effects.output_samples, 0);
+
+    let motion = estimate(&conformance_package("video-motion")).unwrap();
+    assert_eq!((motion.kind, motion.frames), (OutputKind::Video, 10));
+
+    let clip = estimate(&conformance_package("video-clip")).unwrap();
+    assert_eq!(clip.frames, 21, "700 ms at 30000/1001 fps");
+    assert!(clip.video_pixels_per_frame > 0 && clip.video_pixels_per_frame.is_multiple_of(2));
+
+    let mix = estimate(&conformance_package("audio-mix")).unwrap();
+    assert_eq!((mix.canvas_pixels, mix.frames), (0, 0));
+    assert_eq!(mix.output_samples, 300 * 48 * 2);
+    // The mono tone, the stereo chord (each counted once) and the voice in whole AAC frames.
+    let voice = mix.source_samples - 11_025 - 9_600 * 2;
+    assert!(
+        voice > 0 && voice.is_multiple_of(1024),
+        "{}",
+        mix.source_samples
+    );
+    assert!(mix.asset_bytes > 0);
+
+    // A blur that would run for hours costs far more than the whole effects case.
+    let mut hostile = conformance_package("image-effects");
+    let recipe = String::from_utf8(hostile["recipe.json"].clone())
+        .unwrap()
+        .replace(r#""sigma": 2"#, r#""sigma": 400"#);
+    hostile.insert("recipe.json".into(), recipe.into_bytes());
+    let hostile = estimate(&hostile).unwrap();
+    assert_eq!(hostile.max_blur_radius, 1200);
+    assert!(
+        hostile.work_units > 1000 * effects.work_units,
+        "{hostile:?}"
+    );
+}
