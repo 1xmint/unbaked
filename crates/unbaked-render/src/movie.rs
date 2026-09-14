@@ -52,6 +52,7 @@ pub fn render_video<'a>(
         }
     })?;
     for n in 0..frames {
+        limits.check_time()?;
         let canvas = drawing.draw(Moment::Frame { n, fps })?;
         encoder.push(&canvas).map_err(RenderError::Encode)?;
     }
@@ -61,7 +62,8 @@ pub fn render_video<'a>(
     let sound = if recipe.audio.is_empty() {
         None
     } else {
-        let pcm = sound::mix(recipe, file, limits.max_samples)?;
+        let pcm = sound::mix(recipe, file, limits)?;
+        limits.check_time()?;
         let aac = sound::encode_aac(&pcm).map_err(RenderError::Encode)?;
         Some((pcm, aac))
     };

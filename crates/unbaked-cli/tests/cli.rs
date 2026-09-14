@@ -122,7 +122,10 @@ fn check_reports_fresh_in_text_and_json() {
 
     let out = unbaked(&[&"check", &file, &"--json"]);
     assert_eq!(out.status.code(), Some(0));
-    assert_eq!(json(&out), serde_json::json!({ "status": "fresh" }));
+    assert_eq!(
+        json(&out),
+        serde_json::json!({ "ok": true, "status": "fresh" })
+    );
 
     let out = unbaked(&[&"recipe", &file]);
     assert_eq!(out.status.code(), Some(0));
@@ -155,7 +158,7 @@ fn unpack_edit_pack_gives_a_stale_file() {
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(
         json(&out),
-        serde_json::json!({ "status": "stale", "changes": [ { "kind": "recipe" } ] })
+        serde_json::json!({ "ok": true, "status": "stale", "changes": [ { "kind": "recipe" } ] })
     );
     // The original is untouched when -o is given.
     assert_eq!(unbaked(&[&"check", &file]).status.code(), Some(0));
@@ -212,7 +215,10 @@ fn render_makes_a_stale_file_fresh_again() {
     let out = unbaked(&[&"render", &file]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let out = unbaked(&[&"check", &file, &"--json"]);
-    assert_eq!(json(&out), serde_json::json!({ "status": "fresh" }));
+    assert_eq!(
+        json(&out),
+        serde_json::json!({ "ok": true, "status": "fresh" })
+    );
 
     // A folder renders straight to a new file.
     let from_folder = s.0.join("from-folder.unbaked.png");
@@ -282,6 +288,8 @@ fn invalid_and_foreign_files_get_their_own_exit_codes() {
     let out = unbaked(&[&"check", &plain, &"--json"]);
     assert_eq!(out.status.code(), Some(3));
     assert_eq!(json(&out)["status"], "not-unbaked");
+    assert_eq!(json(&out)["ok"], false);
+    assert_eq!(json(&out)["error"]["kind"], "format");
     assert_eq!(unbaked(&[&"check", &plain]).status.code(), Some(3));
 
     assert_eq!(unbaked(&[&"check"]).status.code(), Some(4));
@@ -291,4 +299,73 @@ fn invalid_and_foreign_files_get_their_own_exit_codes() {
         Some(4)
     );
     assert_eq!(unbaked(&[&"--help"]).status.code(), Some(0));
+}
+
+#[test]
+fn render_json_reports_results_limits_and_errors() {
+    let s = Scratch::new("limits");
+    let folder = s.0.join("wall");
+    fs::create_dir_all(&folder).unwrap();
+    let out_file = s.0.join("wall.unbaked.png");
+    let recipe = |size: u32, sigma: u32| {
+        format!(
+            r##"{{"unbaked": 0, "output": {{"kind": "image", "width": {size}, "height": {size}}}, "assets": {{}},
+                "layers": [{{"id": "wall", "type": "solid", "color": "#ffffffff", "width": {size}, "height": {size},
+                            "effects": [{{"type": "blur", "sigma": {sigma}}}]}}]}}"##
+        )
+    };
+
+    fs::write(folder.join("recipe.json"), recipe(4, 1)).unwrap();
+    let out = unbaked(&[&"render", &folder, &"-o", &out_file, &"--json"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let report = json(&out);
+    assert_eq!(report["ok"], true);
+    assert!(report["elapsed_ms"].is_u64() && report["bytes"].as_u64().unwrap() > 0);
+
+    let out = unbaked(&[
+        &"render",
+        &folder,
+        &"-o",
+        &out_file,
+        &"--max-pixels",
+        &"8",
+        &"--json",
+    ]);
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    assert_eq!(json(&out)["error"]["kind"], "over-limit");
+
+    // Hours of blurring inside the pixel limit, stopped by the clock.
+    fs::write(folder.join("recipe.json"), recipe(1500, 100)).unwrap();
+    let args: [&dyn AsRef<std::ffi::OsStr>; 7] = [
+        &"render",
+        &folder,
+        &"-o",
+        &out_file,
+        &"--time-limit-ms",
+        &"50",
+        &"--json",
+    ];
+    let out = unbaked(&args);
+    assert_eq!(out.status.code(), Some(5), "{out:?}");
+    assert_eq!(
+        json(&out),
+        serde_json::json!({ "ok": false, "error": {
+            "kind": "timed-out",
+            "message": format!("{}: the render took longer than the limit of 50 ms", folder.display()),
+            "problems": [],
+        }})
+    );
+    let out = unbaked(&args[..6]);
+    assert_eq!(out.status.code(), Some(5), "{out:?}");
+
+    fs::write(folder.join("recipe.json"), r#"{"unbaked": 0}"#).unwrap();
+    let out = unbaked(&[&"render", &folder, &"-o", &out_file, &"--json"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let report = json(&out);
+    assert_eq!(report["error"]["kind"], "invalid");
+    assert_eq!(report["error"]["problems"][0]["file"], "recipe.json");
+
+    let out = unbaked(&[&"render", &folder, &"--time-limit-ms", &"soon", &"--json"]);
+    assert_eq!(out.status.code(), Some(4), "{out:?}");
+    assert_eq!(json(&out)["error"]["kind"], "usage");
 }

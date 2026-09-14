@@ -62,6 +62,7 @@ fuzz_target!(|json: &[u8]| {
         max_pixels: 1 << 16,
         max_samples: 1 << 17,
         max_frames: 1 << 16,
+        deadline: None,
     };
     match recipe.output.kind {
         OutputKind::Image => {
@@ -84,10 +85,10 @@ fuzz_target!(|json: &[u8]| {
                     break;
                 }
             }
-            let _ = sound::mix(&recipe, &file, limits.max_samples);
+            let _ = sound::mix(&recipe, &file, limits);
         }
         OutputKind::Audio => {
-            let _ = sound::mix(&recipe, &file, limits.max_samples);
+            let _ = sound::mix(&recipe, &file, limits);
         }
     }
 });

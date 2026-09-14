@@ -14,6 +14,7 @@ use unicode_linebreak::{BreakOpportunity, linebreaks};
 use unicode_script::{Script, UnicodeScript};
 
 use crate::image::{Pixmap, TooLarge, premultiply};
+use crate::scene::{Deadline, RenderLimits};
 
 /// A shaped glyph. Positions are font units from the start of its line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +56,10 @@ pub enum TextError {
     /// The font file is broken or unusable.
     Font(String),
     TooLarge(TooLarge),
+    /// [`RenderLimits::deadline`] passed.
+    TimedOut {
+        limit_ms: u64,
+    },
 }
 
 /// A text layer drawn into its source image: one pixel per box unit, covering
@@ -130,7 +135,7 @@ pub fn layout(text: &Text, font: &FontRef) -> Result<Layout, TextError> {
 }
 
 /// Draws `text` with the font file `data` into its source image.
-pub fn draw(text: &Text, data: &[u8], max_pixels: u64) -> Result<Drawn, TextError> {
+pub fn draw(text: &Text, data: &[u8], limits: RenderLimits) -> Result<Drawn, TextError> {
     let font = font(data, text.font_index)?;
     let layout = layout(text, &font)?;
     let outlines = font.outline_glyphs();
@@ -139,6 +144,11 @@ pub fn draw(text: &Text, data: &[u8], max_pixels: u64) -> Result<Drawn, TextErro
         ..Segments::default()
     };
     for line in &layout.lines {
+        if let Some(deadline) = limits.deadline.filter(Deadline::passed) {
+            return Err(TextError::TimedOut {
+                limit_ms: deadline.limit_ms(),
+            });
+        }
         for glyph in &line.glyphs {
             let Some(outline) = outlines.get(GlyphId::new(glyph.id)) else {
                 continue;
@@ -156,7 +166,8 @@ pub fn draw(text: &Text, data: &[u8], max_pixels: u64) -> Result<Drawn, TextErro
     }
     let [r, g, b, a] = [text.color.r, text.color.g, text.color.b, text.color.a];
     let color = premultiply([r, g, b, a].map(|c| f32::from(c) / 255.0));
-    let (image, left, top) = fill(&pen.lines, color, max_pixels).map_err(TextError::TooLarge)?;
+    let (image, left, top) =
+        fill(&pen.lines, color, limits.max_pixels).map_err(TextError::TooLarge)?;
     Ok(Drawn {
         image,
         box_width: layout.box_width,
@@ -521,6 +532,13 @@ mod tests {
 
     const LATO: &[u8] = include_bytes!("../../../tests/fonts/Lato-Regular.ttf");
 
+    fn pixels(max_pixels: u64) -> RenderLimits {
+        RenderLimits {
+            max_pixels,
+            ..RenderLimits::default()
+        }
+    }
+
     fn text(s: &str) -> Text {
         Text {
             text: s.into(),
@@ -718,7 +736,7 @@ mod tests {
             b: 0,
             a: 255,
         };
-        let drawn = draw(&t, LATO, 1_000_000).unwrap();
+        let drawn = draw(&t, LATO, pixels(1_000_000)).unwrap();
         let solid = drawn
             .image
             .data
@@ -742,7 +760,7 @@ mod tests {
         assert!(drawn.origin_x <= 0 && drawn.origin_y <= 0);
         assert!(drawn.image.width as f64 <= drawn.box_width + 2.0);
 
-        let empty = draw(&text(""), LATO, 1_000_000).unwrap();
+        let empty = draw(&text(""), LATO, pixels(1_000_000)).unwrap();
         assert_eq!(empty.image.width, 0);
         assert!((empty.box_height - 24.0).abs() < 1e-9);
     }
