@@ -452,3 +452,49 @@ fn add_packs_media_into_a_folder_or_file() {
     assert_eq!(json(&out)["error"]["kind"], "unsupported");
     assert_eq!(unbaked(&[&"add", &folder, &media]).status.code(), Some(4));
 }
+
+#[test]
+fn preview_and_listen_describe_a_recipe() {
+    let s = Scratch::new("preview");
+    let cases = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance");
+    let fonts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fonts");
+    let png = s.0.join("look.png");
+
+    let text = cases.join("image-text/package");
+    let args: [&dyn AsRef<std::ffi::OsStr>; 9] = [
+        &"preview",
+        &text,
+        &"-o",
+        &png,
+        &"--fonts",
+        &fonts,
+        &"--max-edge",
+        &"60",
+        &"--json",
+    ];
+    let out = unbaked(&args);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let report = json(&out);
+    assert_eq!(
+        (report["width"].as_u64(), report["height"].as_u64()),
+        (Some(60), Some(32))
+    );
+    assert!(fs::read(&png).unwrap().starts_with(b"\x89PNG"));
+
+    let video = cases.join("video-motion/package");
+    let out = unbaked(&[
+        &"preview", &video, &"-o", &png, &"--sheet", &"9", &"--at-ms", &"100",
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(unbaked(&[&"preview", &video]).status.code(), Some(4));
+
+    let out = unbaked(&[&"listen", &cases.join("audio-mix/package"), &"--json"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let report = json(&out);
+    assert_eq!(report["duration_ms"], 300);
+    assert!(report["clipped_samples"].as_u64().unwrap() > 0);
+    assert_eq!(report["loudness_dbfs"].as_array().unwrap().len(), 1);
+    let out = unbaked(&[&"listen", &text, &"--json"]);
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    assert_eq!(json(&out)["error"]["kind"], "unsupported");
+}

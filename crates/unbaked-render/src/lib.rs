@@ -4,7 +4,7 @@ use std::fmt;
 
 use unbaked_core::json::Problem;
 use unbaked_core::package::{Limits, PackageError};
-use unbaked_core::recipe::{self, OutputKind};
+use unbaked_core::recipe::{self, OutputKind, Recipe};
 use unbaked_core::{bake, pack, rules, sha256_hex, sniff};
 
 pub mod draw;
@@ -13,6 +13,7 @@ pub mod image;
 pub mod motion;
 pub mod movie;
 pub mod mp4;
+pub mod preview;
 pub mod scene;
 pub mod sound;
 pub mod text;
@@ -134,14 +135,8 @@ impl FontSource for NoFonts {
     }
 }
 
-/// Renders a package's recipe and returns a complete Unbaked file: the render
-/// as the carrier, holding the package with a fresh `bake.json`. Any
-/// `bake.json` in `files` is replaced. `fonts` finds referenced fonts.
-pub fn render(
-    files: &pack::Files,
-    fonts: &dyn FontSource,
-    limits: RenderLimits,
-) -> Result<Vec<u8>, RenderError> {
+/// A package's recipe, parsed and checked against the package (section 4).
+pub fn checked_recipe(files: &pack::Files) -> Result<Recipe, RenderError> {
     let recipe_json = files.get("recipe.json").ok_or_else(|| {
         RenderError::Recipe(vec![Problem {
             path: String::new(),
@@ -155,9 +150,23 @@ pub fn render(
             .map(|d| sniff::detect(&d[..d.len().min(sniff::HEADER_LEN)]))
     };
     let problems = rules::check(&recipe, &kind_of);
-    if !problems.is_empty() {
-        return Err(RenderError::Recipe(problems));
+    if problems.is_empty() {
+        Ok(recipe)
+    } else {
+        Err(RenderError::Recipe(problems))
     }
+}
+
+/// Renders a package's recipe and returns a complete Unbaked file: the render
+/// as the carrier, holding the package with a fresh `bake.json`. Any
+/// `bake.json` in `files` is replaced. `fonts` finds referenced fonts.
+pub fn render(
+    files: &pack::Files,
+    fonts: &dyn FontSource,
+    limits: RenderLimits,
+) -> Result<Vec<u8>, RenderError> {
+    let recipe = checked_recipe(files)?;
+    let recipe_json = &files["recipe.json"];
     let file = |path: &str| files.get(path).map(Vec::as_slice);
     let carrier = match recipe.output.kind {
         OutputKind::Image => {
