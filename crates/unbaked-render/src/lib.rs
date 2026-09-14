@@ -11,6 +11,7 @@ pub mod draw;
 pub mod effects;
 pub mod image;
 pub mod motion;
+pub mod movie;
 pub mod mp4;
 pub mod scene;
 pub mod sound;
@@ -52,6 +53,11 @@ pub enum RenderError {
         samples: u64,
         limit: u64,
     },
+    /// A video would pass [`RenderLimits::max_frames`].
+    TooManyFrames {
+        frames: u64,
+        limit: u64,
+    },
     /// The result could not be packaged.
     Package(PackageError),
     Encode(String),
@@ -91,6 +97,10 @@ impl fmt::Display for RenderError {
             } => write!(
                 f,
                 "{what} needs {samples} samples per channel, more than the limit of {limit}"
+            ),
+            RenderError::TooManyFrames { frames, limit } => write!(
+                f,
+                "the video has {frames} frames, more than the limit of {limit}"
             ),
             RenderError::Package(e) => write!(f, "{e}"),
             RenderError::Encode(e) => write!(f, "could not encode the render: {e}"),
@@ -152,11 +162,7 @@ pub fn render(
             let pcm = sound::mix(&recipe, &file, limits.max_samples)?;
             sound::encode_m4a(&pcm).map_err(RenderError::Encode)?
         }
-        OutputKind::Video => {
-            return Err(RenderError::Unsupported(
-                "video output is not rendered yet".into(),
-            ));
-        }
+        OutputKind::Video => movie::render_video(&recipe, &file, fonts, limits)?,
     };
 
     let assets: serde_json::Map<String, serde_json::Value> = bake::referenced_files(&recipe)

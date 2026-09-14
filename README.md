@@ -22,13 +22,13 @@ clip.unbaked.mp4     video, or picture + sound
 Early. The format rules are drafted in [SPEC.md](SPEC.md). Why it exists and
 where it is going: [VISION.md](VISION.md).
 
-Files can be checked, unpacked, repacked and rendered. Rendering covers still
-images with solid, image, video, text and group layers so far: masks, blur, shadow and
-adjust effects, transforms, opacity, blend modes, keyframes and transitions.
-Text is shaped with kerning, ligatures and right-to-left runs, and wraps inside
-its box. Audio recipes render too: clips from WAV, MP3, FLAC and M4A files
-are mixed and encoded as AAC-LC in an `.unbaked.m4a`. Video layers show
-H.264 frames from MP4 files in stills; video output comes next.
+Files can be checked, unpacked, repacked and rendered. All three outputs
+render: still images, sound and video. Layers can be solid, image, video, text
+or group, with masks, blur, shadow and adjust effects, transforms, opacity,
+blend modes, keyframes and transitions. Text is shaped with kerning, ligatures
+and right-to-left runs, and wraps inside its box. Sound clips from WAV, MP3,
+FLAC and M4A files are mixed and encoded as AAC-LC. Video is encoded as H.264
+(up to 3840×2160 for now), with the mixed sound when the recipe has any.
 
 Fonts a recipe references without packing are looked up by fingerprint in a
 folder you name with `--fonts`. This repository ships no fonts except the one

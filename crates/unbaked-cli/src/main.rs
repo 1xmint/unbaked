@@ -28,7 +28,7 @@ Usage:
   unbaked render <file-or-dir> [-o <out>] [--fonts <dir>]
                                         Render the recipe and write a fresh Unbaked file.
                                         Renders a file in place unless -o is given; a
-                                        folder needs -o. Image and audio output for now.
+                                        folder needs -o. Images, sound and video.
                                         Fonts the recipe references but does not pack are
                                         looked up by SHA-256 in <dir> and its subfolders.
 

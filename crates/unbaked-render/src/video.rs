@@ -583,6 +583,175 @@ fn picture(info: &SBufferInfo) -> Option<Tagged> {
     ))
 }
 
+/// The largest frame OpenH264 encodes, in either orientation.
+pub const MAX_ENCODE_SIZE: (u32, u32) = (3840, 2160);
+
+/// A finished H.264 stream, ready for an MP4 track.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Encoded {
+    pub sps: Vec<u8>,
+    pub pps: Vec<u8>,
+    /// One frame per sample, NAL units with 4-byte length prefixes.
+    pub samples: Vec<Vec<u8>>,
+    pub sync: Vec<bool>,
+}
+
+/// Encodes canvases as H.264, one frame at a time.
+pub struct FrameEncoder {
+    encoder: openh264::encoder::Encoder,
+    stream: Encoded,
+}
+
+impl FrameEncoder {
+    /// An encoder for `width` × `height` frames at `fps` frames per second,
+    /// with a key frame about every two seconds.
+    pub fn new(width: u32, height: u32, fps: f64) -> Result<FrameEncoder, String> {
+        use openh264::encoder::{
+            Complexity, EncoderConfig, FrameRate, IntraFramePeriod, RateControlMode, VuiConfig,
+        };
+        let (big, small) = (width.max(height), width.min(height));
+        if big > MAX_ENCODE_SIZE.0 || small > MAX_ENCODE_SIZE.1 {
+            return Err(format!(
+                "video larger than {}×{} is not rendered yet",
+                MAX_ENCODE_SIZE.0, MAX_ENCODE_SIZE.1
+            ));
+        }
+        // Constant quality: without rate control every frame uses OpenH264's
+        // base quantiser (26), and no frame is ever skipped.
+        let config = EncoderConfig::new()
+            .rate_control_mode(RateControlMode::Off)
+            .max_frame_rate(FrameRate::from_hz(fps as f32))
+            .skip_frames(false)
+            .complexity(Complexity::High)
+            .intra_frame_period(IntraFramePeriod::from_num_frames(
+                (fps * 2.0).round().clamp(1.0, 600.0) as u32,
+            ))
+            .num_threads(1)
+            .vui(VuiConfig::bt709());
+        let encoder = openh264::encoder::Encoder::with_api_config(
+            openh264::OpenH264API::from_source(),
+            config,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(FrameEncoder {
+            encoder,
+            stream: Encoded {
+                sps: Vec::new(),
+                pps: Vec::new(),
+                samples: Vec::new(),
+                sync: Vec::new(),
+            },
+        })
+    }
+
+    /// Encodes the next frame from a premultiplied canvas.
+    pub fn push(&mut self, canvas: &Pixmap) -> Result<(), String> {
+        use openh264::encoder::FrameType;
+        let yuv = to_yuv(canvas);
+        let n = self.stream.samples.len();
+        let bitstream = self.encoder.encode(&yuv).map_err(|e| e.to_string())?;
+        let mut sample = Vec::new();
+        for l in 0..bitstream.num_layers() {
+            let layer = bitstream.layer(l).ok_or("missing encoder layer")?;
+            for i in 0..layer.nal_count() {
+                let nal = layer.nal_unit(i).ok_or("missing NAL unit")?;
+                let nal = strip_start_code(nal);
+                match nal.first().map(|b| b & 0x1F) {
+                    None | Some(9) => {}
+                    Some(kind @ (7 | 8)) => {
+                        let slot = if kind == 7 {
+                            &mut self.stream.sps
+                        } else {
+                            &mut self.stream.pps
+                        };
+                        if slot.is_empty() {
+                            *slot = nal.to_vec();
+                        } else if slot != nal {
+                            return Err("the encoder changed its parameter sets".into());
+                        }
+                    }
+                    Some(_) => {
+                        let len = u32::try_from(nal.len()).map_err(|_| "a frame is too large")?;
+                        sample.extend_from_slice(&len.to_be_bytes());
+                        sample.extend_from_slice(nal);
+                    }
+                }
+            }
+        }
+        if sample.is_empty() {
+            return Err(format!("the encoder produced nothing for frame {n}"));
+        }
+        let sync = bitstream.frame_type() == FrameType::IDR;
+        if n == 0 && !sync {
+            return Err("the first frame is not a key frame".into());
+        }
+        self.stream.samples.push(sample);
+        self.stream.sync.push(sync);
+        Ok(())
+    }
+
+    /// The stream so far.
+    pub fn finish(self) -> Result<Encoded, String> {
+        if self.stream.sps.is_empty() || self.stream.pps.is_empty() {
+            return Err("the encoder produced no parameter sets".into());
+        }
+        Ok(self.stream)
+    }
+}
+
+fn strip_start_code(nal: &[u8]) -> &[u8] {
+    match nal {
+        [0, 0, 0, 1, rest @ ..] | [0, 0, 1, rest @ ..] => rest,
+        _ => nal,
+    }
+}
+
+/// SPEC.md section 5.7: the canvas composited over opaque black, quantised
+/// with `round(v × 255)`, then converted to BT.709 limited-range YUV. Each
+/// chroma sample is the average of the 2×2 pixels it covers.
+fn to_yuv(canvas: &Pixmap) -> OwnedYuv {
+    let (w, h) = (canvas.width as usize, canvas.height as usize);
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let (kr, kb) = (
+        f64::from(ColorSpace::BT709.kr),
+        f64::from(ColorSpace::BT709.kb),
+    );
+    let kg = 1.0 - kr - kb;
+    let mut y = vec![0u8; w * h];
+    let mut cb = vec![0.0f64; cw * ch];
+    let mut cr = vec![0.0f64; cw * ch];
+    let mut count = vec![0u8; cw * ch];
+    for (i, px) in canvas.data.as_chunks::<4>().0.iter().enumerate() {
+        // Over opaque black, premultiplied colour is the result.
+        let [r, g, b] =
+            [px[0], px[1], px[2]].map(|v| (f64::from(v) * 255.0 + 0.5).floor().clamp(0.0, 255.0));
+        let luma = kr * r + kg * g + kb * b;
+        y[i] = (16.0 + luma * 219.0 / 255.0 + 0.5).floor() as u8;
+        let c = (i / w / 2) * cw + (i % w) / 2;
+        cb[c] += (b - luma) / (2.0 * (1.0 - kb));
+        cr[c] += (r - luma) / (2.0 * (1.0 - kr));
+        count[c] += 1;
+    }
+    let chroma = |sums: Vec<f64>| -> Vec<u8> {
+        sums.iter()
+            .zip(&count)
+            .map(|(s, &n)| {
+                (128.0 + s / f64::from(n.max(1)) * 224.0 / 255.0 + 0.5)
+                    .floor()
+                    .clamp(0.0, 255.0) as u8
+            })
+            .collect()
+    };
+    OwnedYuv {
+        width: w,
+        height: h,
+        strides: (w, cw, cw),
+        y,
+        u: chroma(cb),
+        v: chroma(cr),
+    }
+}
+
 /// A picture and the tag it was fed with.
 type Tagged = (u64, OwnedYuv);
 
@@ -755,6 +924,65 @@ mod tests {
             0,
             "frames before the damage still decode"
         );
+    }
+
+    #[test]
+    fn encoded_frames_decode_to_the_same_colours() {
+        // 20 frames at 10 fps: red, then green, each half.
+        let (w, h) = (64u32, 48u32);
+        let mut encoder = FrameEncoder::new(w, h, 10.0).unwrap();
+        let colours = [[0.8f32, 0.1, 0.1, 1.0], [0.1, 0.7, 0.2, 1.0]];
+        for n in 0..20 {
+            let mut canvas = Pixmap::filled(w, h, colours[n / 10], 1_000_000).unwrap();
+            // A half-transparent white square counts as composited over black.
+            for yy in 0..16 {
+                for xx in 0..16 {
+                    canvas.set(xx, yy, [0.5, 0.5, 0.5, 0.5]);
+                }
+            }
+            encoder.push(&canvas).unwrap();
+        }
+        let stream = encoder.finish().unwrap();
+        assert!(stream.sync[0] && stream.sync[..10].iter().filter(|s| **s).count() == 1);
+        let file = mp4::write_mp4(
+            &mp4::VideoTrack {
+                width: w as u16,
+                height: h as u16,
+                timescale: 90000,
+                delta: 9000,
+                sps: &stream.sps,
+                pps: &stream.pps,
+                samples: &stream.samples,
+                sync: &stream.sync,
+                length_ms: 1950,
+            },
+            None,
+        );
+        let mut video = Video::open(&file, 1000, 1_000_000).unwrap();
+        assert_eq!(
+            video.color,
+            ColorSpace::BT709,
+            "the stream says BT.709 limited range"
+        );
+        let near = |got: [f32; 4], want: [f32; 3]| {
+            got[..3].iter().zip(want).all(|(g, w)| (g - w).abs() < 0.03)
+        };
+        for (at, want) in [
+            (50, colours[0]),
+            (950, colours[0]),
+            (1050, colours[1]),
+            (1949, colours[1]),
+        ] {
+            let frame = video.frame_at(at, 1).unwrap();
+            assert_eq!((frame.width, frame.height), (w, h));
+            let got = frame.pixel(40, 30);
+            assert!(
+                near(got, [want[0], want[1], want[2]]),
+                "{at} ms: {got:?} for {want:?}"
+            );
+            let grey = frame.pixel(6, 6);
+            assert!(near(grey, [0.5, 0.5, 0.5]), "{at} ms: {grey:?}");
+        }
     }
 
     #[test]

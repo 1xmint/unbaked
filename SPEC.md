@@ -655,7 +655,7 @@ animatable; `color` is not.
 ### 5.7 Final output
 
 - **`image`**: premultiplied values are un-premultiplied (a pixel with alpha 0 becomes all zeros), then quantised with `round(v × 255)`, rounding halves up, and clamped to 0–255. The PNG is 8-bit RGBA with an `sRGB` chunk.
-- **`video`**: each frame is composited over opaque black, quantised the same way, and is converted to YUV 4:2:0, BT.709 limited range, H.264. Encoder settings are not specified. The encoder is lossy, so section 8 compares frames before encoding.
+- **`video`**: each frame is composited over opaque black, quantised the same way, and is converted to YUV 4:2:0, BT.709 limited range, H.264. Encoder settings are not specified. The encoder is lossy, so section 8 compares frames before encoding. The first frame is a key frame. Writers MUST present the video for exactly `duration_ms` with an edit list, cutting the last frame short when the frame count rounds up. If the recipe has audio clips, the file also holds the mix from section 6 as an AAC-LC track.
 
 ---
 
