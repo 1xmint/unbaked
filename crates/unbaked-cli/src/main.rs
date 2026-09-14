@@ -54,6 +54,10 @@ Usage:
   unbaked listen <file-or-dir> [limits] [--json]
                                         Mix the sound and describe it: length, peak level,
                                         clipped samples, loudness per 500 ms, silent stretches.
+  unbaked estimate <file-or-dir> [--json]
+                                        How big a render is, from the recipe and asset headers
+                                        only: pixels, frames, buffers, blur radius, samples,
+                                        bytes, and one work-units number for pricing.
 
 Limits (render, preview and listen):
   --time-limit-ms <n>                   Stop once the work has run this long
@@ -331,6 +335,46 @@ fn run() -> Result<u8, Fail> {
                     pixels.width,
                     pixels.height
                 );
+            }
+            Ok(0)
+        }
+        "estimate" => {
+            let input = &wanted(1)?[0];
+            let files = load(input)?;
+            let e =
+                unbaked_render::estimate::estimate(&files).map_err(|e| render_fail(input, e))?;
+            let kind = match e.kind {
+                unbaked_core::recipe::OutputKind::Image => "image",
+                unbaked_core::recipe::OutputKind::Video => "video",
+                unbaked_core::recipe::OutputKind::Audio => "audio",
+            };
+            let report = json!({
+                "ok": true,
+                "kind": kind,
+                "canvas_pixels": e.canvas_pixels,
+                "frames": e.frames,
+                "layers": e.layers,
+                "extra_buffers": e.extra_buffers,
+                "blurs": e.blurs,
+                "max_blur_radius": e.max_blur_radius,
+                "image_pixels": e.image_pixels,
+                "video_pixels_per_frame": e.video_pixels_per_frame,
+                "output_samples": e.output_samples,
+                "source_samples": e.source_samples,
+                "asset_bytes": e.asset_bytes,
+                "work_units": e.work_units,
+            });
+            if json_output {
+                print_json(&report);
+            } else if let Json::Object(fields) = &report {
+                for (name, value) in fields.iter().skip(1) {
+                    println!(
+                        "{name}: {}",
+                        value
+                            .as_str()
+                            .map_or_else(|| value.to_string(), str::to_owned)
+                    );
+                }
             }
             Ok(0)
         }

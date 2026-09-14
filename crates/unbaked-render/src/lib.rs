@@ -9,6 +9,7 @@ use unbaked_core::{bake, pack, rules, sha256_hex, sniff};
 
 pub mod draw;
 pub mod effects;
+pub mod estimate;
 pub mod image;
 pub mod motion;
 pub mod movie;
