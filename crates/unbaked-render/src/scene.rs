@@ -1,22 +1,25 @@
 //! Drawing a recipe's layers at one moment (SPEC.md sections 4.5, 4.6, 4.10,
 //! 4.11 and 5.4).
 //!
-//! Solid, image and group layers are drawn, with masks, effects, transforms,
-//! opacity, blend modes, keyframes and transitions. Text and video layers are
-//! refused with [`RenderError::Unsupported`] until they are built.
+//! Solid, image, text and group layers are drawn, with masks, effects,
+//! transforms, opacity, blend modes, keyframes and transitions. Video layers
+//! are refused with [`RenderError::Unsupported`] until they are built.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use unbaked_core::json::join;
 use unbaked_core::recipe::{AssetSource, Blend, Color, Content, Layer, Mask, MaskMode, Recipe};
+use unbaked_core::sha256_hex;
 use unbaked_core::sniff::{self, AssetKind};
 
-use crate::RenderError;
 use crate::draw::{Affine, composite, place};
 use crate::effects;
 use crate::image::{Pixmap, TooLarge, decode_jpeg, decode_png, premultiply};
 use crate::motion::{transitions, value_at};
+use crate::text::{self, TextError};
 use crate::timing::{Moment, Span};
+use crate::{FontSource, RenderError};
 
 /// Limits a render stays within.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,17 +46,20 @@ struct Scene<'a> {
     recipe: &'a Recipe,
     file: &'a dyn Fn(&str) -> Option<&'a [u8]>,
     limits: RenderLimits,
+    fonts: &'a dyn FontSource,
     decoded: HashMap<&'a str, Pixmap>,
+    font_files: HashMap<&'a str, Rc<[u8]>>,
     moment: Moment,
     width: u32,
     height: u32,
 }
 
 /// Draws the frame of an `image` recipe at `output.at_ms`. `file` returns a
-/// package file's bytes by path.
+/// package file's bytes by path; `fonts` finds referenced fonts.
 pub fn render_still<'a>(
     recipe: &'a Recipe,
     file: &'a dyn Fn(&str) -> Option<&'a [u8]>,
+    fonts: &'a dyn FontSource,
     limits: RenderLimits,
 ) -> Result<Pixmap, RenderError> {
     let output = &recipe.output;
@@ -71,7 +77,9 @@ pub fn render_still<'a>(
         recipe,
         file,
         limits,
+        fonts,
         decoded: HashMap::new(),
+        font_files: HashMap::new(),
         moment: Moment::AtMs(output.at_ms),
         width,
         height,
@@ -84,6 +92,33 @@ pub fn render_still<'a>(
         Affine::IDENTITY,
     )?;
     Ok(canvas)
+}
+
+/// A layer's source image and how it maps to the layer box: pixel `(x, y)`
+/// lands at box point `((x - origin_x) * scale_x, (y - origin_y) * scale_y)`.
+struct Source {
+    image: Pixmap,
+    box_w: f64,
+    box_h: f64,
+    scale_x: f64,
+    scale_y: f64,
+    origin_x: i64,
+    origin_y: i64,
+}
+
+impl Source {
+    /// An image stretched onto its box.
+    fn stretched(image: Pixmap, box_w: f64, box_h: f64) -> Source {
+        Source {
+            scale_x: box_w / f64::from(image.width),
+            scale_y: box_h / f64::from(image.height),
+            image,
+            box_w,
+            box_h,
+            origin_x: 0,
+            origin_y: 0,
+        }
+    }
 }
 
 fn too_large(what: &str) -> impl FnOnce(TooLarge) -> RenderError + '_ {
@@ -161,7 +196,6 @@ impl<'a> Scene<'a> {
 
         // Steps 1-3 of section 5.4: the layer's pixels, in canvas space.
         let placed = match &layer.content {
-            Content::Text(_) => return unsupported("text layers"),
             Content::Video { .. } => return unsupported("video layers"),
             Content::Group { layers } => {
                 // The group box is the canvas; children render into an isolated buffer.
@@ -177,18 +211,17 @@ impl<'a> Scene<'a> {
                 }
                 buffer
             }
-            Content::Solid { .. } | Content::Image { .. } => {
-                let (source, box_w, box_h) = self.source(layer, path)?;
-                let (source_w, source_h) = (f64::from(source.width), f64::from(source.height));
-                let grown = effects::apply(source, &layer.effects, t, self.limits.max_pixels)
+            Content::Solid { .. } | Content::Image { .. } | Content::Text(_) => {
+                let source = self.source(layer, path)?;
+                let grown = effects::apply(source.image, &layer.effects, t, self.limits.max_pixels)
                     .map_err(too_large(path))?;
-                // Source pixels to the layer box; effect growth extends past the box.
+                // Source pixels to the layer box; text ink and effect growth extend past the box.
                 let to_canvas = outer
-                    .then_after(own(box_w, box_h))
-                    .then_after(Affine::scale(box_w / source_w, box_h / source_h))
+                    .then_after(own(source.box_w, source.box_h))
+                    .then_after(Affine::scale(source.scale_x, source.scale_y))
                     .then_after(Affine::translate(
-                        -grown.origin_x as f64,
-                        -grown.origin_y as f64,
+                        -(source.origin_x + grown.origin_x) as f64,
+                        -(source.origin_y + grown.origin_y) as f64,
                     ));
                 if layer.mask.is_none() {
                     place(target, &grown.image, to_canvas, opacity, layer.blend);
@@ -265,8 +298,8 @@ impl<'a> Scene<'a> {
         Ok(out)
     }
 
-    /// A solid's or image's source image and its layer box size (section 4.6).
-    fn source(&mut self, layer: &'a Layer, path: &str) -> Result<(Pixmap, f64, f64), RenderError> {
+    /// A solid's, image's or text's source image and layer box (section 4.6).
+    fn source(&mut self, layer: &'a Layer, path: &str) -> Result<Source, RenderError> {
         match &layer.content {
             Content::Solid {
                 color,
@@ -278,7 +311,7 @@ impl<'a> Scene<'a> {
                 let (w, h) = (width.ceil().max(1.0) as u32, height.ceil().max(1.0) as u32);
                 let pixmap =
                     Pixmap::filled(w, h, fill, self.limits.max_pixels).map_err(too_large(path))?;
-                Ok((pixmap, *width, *height))
+                Ok(Source::stretched(pixmap, *width, *height))
             }
             Content::Image {
                 asset,
@@ -293,10 +326,53 @@ impl<'a> Scene<'a> {
                     (None, Some(h)) => (h * iw / ih, *h),
                     (None, None) => (iw, ih),
                 };
-                Ok((image.clone(), bw, bh))
+                Ok(Source::stretched(image.clone(), bw, bh))
+            }
+            Content::Text(text) => {
+                let data = self.font(&text.font)?;
+                let drawn =
+                    text::draw(text, &data, self.limits.max_pixels).map_err(|e| match e {
+                        TextError::Font(message) => RenderError::Decode {
+                            asset: format!("font {:?}", text.font),
+                            message,
+                        },
+                        TextError::TooLarge(e) => too_large(path)(e),
+                    })?;
+                Ok(Source {
+                    image: drawn.image,
+                    box_w: drawn.box_width,
+                    box_h: drawn.box_height,
+                    scale_x: 1.0,
+                    scale_y: 1.0,
+                    origin_x: drawn.origin_x,
+                    origin_y: drawn.origin_y,
+                })
             }
             _ => Err(RenderError::Unsupported(format!("{path}: no source image"))),
         }
+    }
+
+    /// A font asset's file, packed or found by its SHA-256 (section 4.12).
+    fn font(&mut self, id: &'a str) -> Result<Rc<[u8]>, RenderError> {
+        if let Some(data) = self.font_files.get(id) {
+            return Ok(Rc::clone(data));
+        }
+        let missing = || RenderError::Unsupported(format!("asset {id:?} is missing"));
+        let asset = self.recipe.assets.get(id).ok_or_else(missing)?;
+        let data: Rc<[u8]> = match &asset.source {
+            AssetSource::Path(path) => (self.file)(path).ok_or_else(missing)?.into(),
+            AssetSource::Ref(reference) => self
+                .fonts
+                .find(&reference.sha256)
+                .filter(|data| sha256_hex(data) == reference.sha256)
+                .ok_or_else(|| RenderError::FontNotFound {
+                    family: reference.family.clone(),
+                    style: reference.style.clone(),
+                })?
+                .into(),
+        };
+        self.font_files.insert(id, Rc::clone(&data));
+        Ok(data)
     }
 
     /// Decodes an image asset once and reuses it.

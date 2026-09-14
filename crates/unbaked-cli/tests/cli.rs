@@ -230,6 +230,40 @@ fn render_makes_a_stale_file_fresh_again() {
 }
 
 #[test]
+fn render_finds_referenced_fonts_in_a_folder() {
+    let s = Scratch::new("fonts");
+    let lato = include_bytes!("../../../tests/fonts/Lato-Regular.ttf");
+    let folder = s.0.join("card");
+    fs::create_dir_all(&folder).unwrap();
+    let recipe = format!(
+        r#"{{"unbaked": 0, "output": {{"kind": "image", "width": 40, "height": 30}},
+            "assets": {{"lato": {{"ref": {{"family": "Lato", "sha256": "{}"}}}}}},
+            "layers": [{{"id": "t", "type": "text", "text": "Hi", "font": "lato", "size_px": 20}}]}}"#,
+        sha256_hex(lato)
+    );
+    fs::write(folder.join("recipe.json"), recipe).unwrap();
+    let out_file = s.0.join("card.unbaked.png");
+
+    let out = unbaked(&[&"render", &folder, &"-o", &out_file]);
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    let message = String::from_utf8_lossy(&out.stderr);
+    assert!(message.contains("font \"Lato\" was not found"), "{message}");
+
+    // Found by fingerprint in a subfolder, whatever the file is called.
+    let fonts = s.0.join("fonts");
+    fs::create_dir_all(fonts.join("nested")).unwrap();
+    fs::write(fonts.join("nested").join("renamed.OTF"), lato).unwrap();
+    fs::write(fonts.join("decoy.ttf"), b"not the font").unwrap();
+    let out = unbaked(&[&"render", &folder, &"-o", &out_file, &"--fonts", &fonts]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(unbaked(&[&"check", &out_file]).status.code(), Some(0));
+
+    let missing = s.0.join("no-such-folder");
+    let out = unbaked(&[&"render", &folder, &"-o", &out_file, &"--fonts", &missing]);
+    assert_eq!(out.status.code(), Some(4), "{out:?}");
+}
+
+#[test]
 fn invalid_and_foreign_files_get_their_own_exit_codes() {
     let s = Scratch::new("bad");
     let broken = fresh_file(
