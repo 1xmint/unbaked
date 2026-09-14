@@ -157,34 +157,93 @@ fn image_layers_scale_by_aspect_ratio_and_fade_at_their_edges() {
     assert_eq!(at(&out, 0, 0)[3], 143);
 }
 
+const CLIP: &[u8] = include_bytes!("../../../tests/video/frames-high.mp4");
+
+/// The frame number in the test clip: its top-left block has luma 24 + 16·n.
+fn clip_frame(image: &Pixmap, x: u32, y: u32) -> i32 {
+    let luma = f64::from(at(image, x, y)[1]) / 255.0 * 219.0 + 16.0;
+    ((luma - 24.0) / 16.0).round() as i32
+}
+
+fn video_recipe(output: &str, layer: &str) -> String {
+    format!(
+        r#"{{"unbaked": 0, "output": {output},
+            "assets": {{"clip": {{"path": "assets/clip.mp4"}}}},
+            "layers": [{{"id": "v", "type": "video", "asset": "clip"{layer}}}]}}"#
+    )
+}
+
 #[test]
-fn unsupported_features_are_refused_clearly() {
-    let video = r#"{"id": "v", "type": "video", "asset": "clip"}"#;
-    let recipe = image_recipe(1, 1, "", video);
+fn video_layers_show_the_frame_at_their_source_time() {
+    let files = [("assets/clip.mp4", CLIP)];
+    let shown = |at_ms: u64, layer: &str| {
+        let output = format!(r#"{{"kind": "image", "width": 96, "height": 64, "at_ms": {at_ms}}}"#);
+        still(&video_recipe(&output, layer), &files).unwrap()
+    };
+    // The clip's frames are 100 ms apart, with frame 0 shown for the first 300 ms.
+    assert_eq!(clip_frame(&shown(450, ""), 8, 8), 2);
+    assert_eq!(clip_frame(&shown(1150, ""), 8, 8), 9);
     assert_eq!(
-        still(&recipe, &[]).unwrap_err(),
-        RenderError::Unsupported("/layers/0: video layers are not rendered yet".into())
+        clip_frame(&shown(60_000, ""), 8, 8),
+        9,
+        "the last frame is held"
     );
-    let nested = image_recipe(
-        1,
-        1,
-        "",
-        &format!(r#"{{"id": "g", "type": "group", "layers": [{video}]}}"#),
-    );
-    assert_eq!(
-        still(&nested, &[]).unwrap_err(),
-        RenderError::Unsupported("/layers/0/layers/0: video layers are not rendered yet".into())
-    );
-    let hidden = image_recipe(
-        1,
-        1,
-        "",
-        &video.replace("\"asset\"", "\"hidden\": true, \"asset\""),
+    // Trim moves into the clip; start delays it.
+    assert_eq!(clip_frame(&shown(50, r#", "trim_start_ms": 700"#), 8, 8), 5);
+    assert_eq!(clip_frame(&shown(750, r#", "start_ms": 300"#), 8, 8), 2);
+    assert_eq!(at(&shown(250, r#", "start_ms": 300"#), 8, 8), CLEAR);
+    // The box follows the frame's aspect ratio.
+    let half = shown(450, r#", "width": 48"#);
+    assert_eq!(clip_frame(&half, 4, 4), 2);
+    assert_eq!(at(&half, 60, 40), CLEAR);
+    assert_eq!(at(&half, 47, 31)[3], 255);
+
+    let hidden = video_recipe(
+        r#"{"kind": "image", "width": 1, "height": 1}"#,
+        r#", "hidden": true"#,
     );
     assert!(
         still(&hidden, &[]).is_ok(),
-        "hidden layers are skipped, not refused"
+        "hidden layers are skipped, not opened"
     );
+    let broken = [("assets/clip.mp4", &CLIP[..CLIP.len() / 2])];
+    let output = r#"{"kind": "image", "width": 96, "height": 64}"#;
+    assert!(matches!(
+        still(&video_recipe(output, ""), &broken),
+        Err(RenderError::Decode { asset, .. }) if asset == "assets/clip.mp4"
+    ));
+}
+
+#[test]
+fn video_output_is_refused_clearly() {
+    let recipe = video_recipe(
+        r#"{"kind": "video", "width": 96, "height": 64, "fps": "10/1", "duration_ms": 1000}"#,
+        "",
+    );
+    let files: pack::Files = [
+        ("recipe.json", recipe.into_bytes()),
+        ("assets/clip.mp4", CLIP.to_vec()),
+    ]
+    .into_iter()
+    .map(|(n, d)| (n.to_owned(), d))
+    .collect();
+    assert_eq!(
+        render(&files, &NoFonts, RenderLimits::default()).unwrap_err(),
+        RenderError::Unsupported("video output is not rendered yet".into())
+    );
+    // The same clip in a still renders to a fresh file.
+    let still_recipe = video_recipe(
+        r#"{"kind": "image", "width": 96, "height": 64, "at_ms": 450}"#,
+        "",
+    );
+    let mut files = files;
+    files.insert("recipe.json".into(), still_recipe.into_bytes());
+    let file = render(&files, &NoFonts, RenderLimits::default()).unwrap();
+    assert_eq!(
+        open(&file, Limits::default()).unwrap().check(),
+        Status::Fresh
+    );
+    assert_eq!(clip_frame(&decode_png(&file, 10_000).unwrap(), 8, 8), 2);
 }
 
 /// A 1-high solid: `{"id": .., "type": "solid", ..}` with extra fields.

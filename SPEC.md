@@ -560,6 +560,14 @@ is `E − S`.
 For a visible video layer, the source time is `s = t + trim_start_ms` ms. The
 renderer shows the source frame with the greatest presentation time ≤ `s`.
 
+**MP4 sources.** The picture of an MP4 asset is its first `vide` track. The source time `s` becomes a media time through the track's edit list, as for sound (section 6), with edit durations in the movie's timescale:
+- inside a media edit, `media_time + (s − edit start) × timescale / 1000`;
+- during an empty edit, the `media_time` of the next media edit;
+- after the last edit, the end of the last media edit;
+- a track without an edit list uses `s × timescale / 1000`.
+
+A frame's presentation time is its decode time plus its composition offset. Compare exactly, without rounding. If no frame is presented at or before the media time, the first frame in presentation order is shown. Interlaced streams are not supported in version 0.
+
 For `image` output, there is a single frame at `tₙ = at_ms / 1000`. The same
 visibility test, local times and source-frame rule apply, compared exactly:
 visible when `S ≤ at_ms < E`.

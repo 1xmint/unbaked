@@ -16,6 +16,7 @@ pub mod scene;
 pub mod sound;
 pub mod text;
 pub mod timing;
+pub mod video;
 
 pub use scene::RenderLimits;
 

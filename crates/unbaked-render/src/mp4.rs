@@ -23,6 +23,8 @@ pub struct Track {
     pub samples: Vec<Sample>,
     /// The edit list, if the track has one.
     pub edits: Option<Vec<Edit>>,
+    /// Clockwise display rotation from the track header: 0, 90, 180 or 270.
+    pub rotation: u16,
 }
 
 /// A sample description: its format (`mp4a`, `avc1`, ...) and the bytes after
@@ -193,6 +195,7 @@ pub fn read(file: &[u8], max_samples: u64) -> Result<Movie, String> {
 
 fn read_track(trak: &[u8], max_samples: u64) -> Result<Track, String> {
     let trak = boxes(trak)?;
+    let rotation = read_rotation(need(&trak, b"tkhd")?)?;
     let edits = match child(&trak, b"edts").map(boxes).transpose()? {
         Some(edts) => match child(&edts, b"elst") {
             Some(elst) => Some(read_edits(elst)?),
@@ -252,10 +255,30 @@ fn read_track(trak: &[u8], max_samples: u64) -> Result<Track, String> {
         .collect();
     Ok(Track {
         handler,
+        rotation,
         timescale,
         entry,
         samples,
         edits,
+    })
+}
+
+/// The rotation in a `tkhd` matrix. Anything but a quarter turn is ignored.
+fn read_rotation(tkhd: &[u8]) -> Result<u16, String> {
+    let mut r = Reader::new(tkhd);
+    let (version, _) = r.full()?;
+    r.bytes(if version == 1 { 32 } else { 20 })?;
+    r.bytes(16)?;
+    let [a, b, _, c, d] = [r.u32()?, r.u32()?, r.u32()?, r.u32()?, r.u32()?].map(|v| v as i32);
+    const ONE: i32 = 0x1_0000;
+    Ok(if (a, b, c, d) == (0, ONE, -ONE, 0) {
+        90
+    } else if (a, b, c, d) == (-ONE, 0, 0, -ONE) {
+        180
+    } else if (a, b, c, d) == (0, -ONE, ONE, 0) {
+        270
+    } else {
+        0
     })
 }
 
