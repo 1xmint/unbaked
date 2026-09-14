@@ -116,6 +116,10 @@
         "duration_ms": 200,
         "ease": "ease"
       },
+      "out": {
+        "type": "slide-right",
+        "duration_ms": 150
+      },
       "layers": [
         {
           "id": "dot",

@@ -439,7 +439,11 @@ fn read_wav(bytes: &[u8]) -> Result<Pcm, String> {
     if bytes.get(..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WAVE") {
         return Err(bad());
     }
-    let u16_at = |i: usize| bytes.get(i..i + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let u16_at = |i: usize| {
+        bytes
+            .get(i..i + 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+    };
     let u32_at = |i: usize| {
         bytes
             .get(i..i + 4)
@@ -449,7 +453,14 @@ fn read_wav(bytes: &[u8]) -> Result<Pcm, String> {
     while let (Some(kind), Some(len)) = (bytes.get(pos..pos + 4), u32_at(pos + 4)) {
         let body = pos + 8..pos + 8 + len as usize;
         match kind {
-            b"fmt " => format = Some((u16_at(body.start), u16_at(body.start + 2), u32_at(body.start + 4), u16_at(body.start + 14))),
+            b"fmt " => {
+                format = Some((
+                    u16_at(body.start),
+                    u16_at(body.start + 2),
+                    u32_at(body.start + 4),
+                    u16_at(body.start + 14),
+                ))
+            }
             b"data" => data = bytes.get(body.clone()),
             _ => {}
         }
@@ -503,7 +514,8 @@ fn frames_match_within_the_section_8_tolerances() {
 
 #[test]
 fn glyphs_match_within_half_a_pixel() {
-    let layout = |x: f64, glyph: u32| json!({"layers": {"t": [{"glyph": glyph, "x": x, "y": 10.0}]}});
+    let layout =
+        |x: f64, glyph: u32| json!({"layers": {"t": [{"glyph": glyph, "x": x, "y": 10.0}]}});
     assert!(compare_glyphs(&layout(3.0, 5), &layout(3.5, 5)).is_ok());
     assert!(compare_glyphs(&layout(3.0, 5), &layout(3.501, 5)).is_err());
     assert!(compare_glyphs(&layout(3.0, 5), &layout(3.0, 6)).is_err());

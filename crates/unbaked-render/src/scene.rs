@@ -159,7 +159,13 @@ impl<'a> Frames<'a> {
         );
         scene.cover_text = false;
         drawn?;
-        Ok(canvas.data.as_chunks::<4>().0.iter().map(|p| p[3] > 0.0).collect())
+        Ok(canvas
+            .data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| p[3] > 0.0)
+            .collect())
     }
 }
 

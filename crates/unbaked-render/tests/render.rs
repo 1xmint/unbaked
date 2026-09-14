@@ -233,12 +233,24 @@ fn two_layers_can_show_one_clip_at_different_times() {
     let alone = |at_ms: u64, trim: u64| {
         let output = format!(r#"{{"kind": "image", "width": 96, "height": 64, "at_ms": {at_ms}}}"#);
         let layer = format!(r#", "trim_start_ms": {trim}"#);
-        clip_frame(&still(&video_recipe(&output, &layer), &files).unwrap(), 8, 8)
+        clip_frame(
+            &still(&video_recipe(&output, &layer), &files).unwrap(),
+            8,
+            8,
+        )
     };
     for at_ms in (0..1300).step_by(50) {
         let canvas = frames.draw(Moment::AtMs(at_ms)).unwrap();
-        assert_eq!(clip_frame(&canvas, 8, 8), alone(at_ms, 600), "late at {at_ms}");
-        assert_eq!(clip_frame(&canvas, 104, 8), alone(at_ms, 0), "early at {at_ms}");
+        assert_eq!(
+            clip_frame(&canvas, 8, 8),
+            alone(at_ms, 600),
+            "late at {at_ms}"
+        );
+        assert_eq!(
+            clip_frame(&canvas, 104, 8),
+            alone(at_ms, 0),
+            "early at {at_ms}"
+        );
     }
 }
 
