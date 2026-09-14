@@ -1028,3 +1028,26 @@ fn without_the_video_feature_video_layers_fail_clearly() {
         RenderError::Unsupported(unbaked_render::NO_VIDEO.into())
     );
 }
+
+#[test]
+fn a_generated_jpeg_decodes_close_and_turns_by_its_exif_orientation() {
+    let file =
+        include_bytes!("../../../tests/conformance/image-jpeg-exif/package/assets/turned.jpg");
+    let image = unbaked_render::image::decode_jpeg(file, 1000).unwrap();
+    // Stored 16x8, orientation 6: shown 8x16, the stored top row down the right edge.
+    assert_eq!((image.width, image.height), (8, 16));
+    for sy in 0..8u32 {
+        for sx in 0..16u32 {
+            let want: [i32; 3] = if sx < 4 && sy < 4 {
+                [40, 60, 220]
+            } else {
+                [(60 + sx as i32 * 12).min(255), 90, 40 + sy as i32 * 10]
+            };
+            let got = at(&image, 7 - sy, sx);
+            for c in 0..3 {
+                let off = (i32::from(got[c]) - want[c]).abs();
+                assert!(off <= 12, "stored {sx},{sy}: {got:?} vs {want:?}");
+            }
+        }
+    }
+}

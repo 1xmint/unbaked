@@ -1,0 +1,46 @@
+{
+  "unbaked": 0,
+  "output": {
+    "kind": "image",
+    "width": 160,
+    "height": 72,
+    "background": "#ffffffff"
+  },
+  "assets": {
+    "arabic": {
+      "ref": {
+        "family": "Noto Sans Arabic",
+        "style": "Regular",
+        "sha256": "bdff3e5659d67e67def05b33f749683b9376ae819d65d3dd62ac4640b3aaef48"
+      }
+    }
+  },
+  "layers": [
+    {
+      "id": "numbers",
+      "type": "text",
+      "text": "\u0645\u0631\u062d\u0628\u0627 2026 \u0628\u0643\u0645",
+      "font": "arabic",
+      "size_px": 18,
+      "color": "#202020ff",
+      "transform": {
+        "x": 4,
+        "y": 2
+      }
+    },
+    {
+      "id": "wrapped",
+      "type": "text",
+      "text": "\u0627\u0644\u0633\u0644\u0627\u0645 \u0639\u0644\u064a\u0643\u0645 \u0648\u0631\u062d\u0645\u0629 \u0627\u0644\u0644\u0647",
+      "font": "arabic",
+      "size_px": 16,
+      "color": "#803020ff",
+      "box_width": 110,
+      "align": "right",
+      "transform": {
+        "x": 46,
+        "y": 30
+      }
+    }
+  ]
+}

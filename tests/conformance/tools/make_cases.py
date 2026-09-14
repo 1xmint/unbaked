@@ -87,6 +87,110 @@ def webp_lossless(width, height, pixel):
     return b"RIFF" + struct.pack("<I", 4 + len(chunk)) + b"WEBP" + chunk
 
 
+def jpeg_baseline(width, height, pixel, orientation=1):
+    """A baseline JPEG, 4:4:4, every coefficient divided by 2, with an EXIF orientation."""
+    def zigzag():
+        order = sorted(((x, y) for y in range(8) for x in range(8)),
+                       key=lambda p: (p[0] + p[1], p[1] if (p[0] + p[1]) % 2 else p[0]))
+        return [y * 8 + x for x, y in order]
+
+    zz = zigzag()
+    quant = 2
+    cos = [[math.cos((2 * x + 1) * u * math.pi / 16) for x in range(8)] for u in range(8)]
+    scale = [1 / math.sqrt(2)] + [1.0] * 7
+
+    def channels(x, y):
+        r, g, b = pixel(min(x, width - 1), min(y, height - 1))
+        return (0.299 * r + 0.587 * g + 0.114 * b,
+                -0.168736 * r - 0.331264 * g + 0.5 * b + 128,
+                0.5 * r - 0.418688 * g - 0.081312 * b + 128)
+
+    # Symbols first, so the prefix codes can be built from what is used.
+    symbols = []  # (table, symbol, extra bits, extra length)
+    previous = [0, 0, 0]
+    for by in range(0, height, 8):
+        for bx in range(0, width, 8):
+            block = [[channels(bx + x, by + y) for x in range(8)] for y in range(8)]
+            for c in range(3):
+                coefficients = []
+                for v in range(8):
+                    for u in range(8):
+                        total = sum((block[y][x][c] - 128) * cos[u][x] * cos[v][y] for y in range(8) for x in range(8))
+                        coefficients.append(round(scale[u] * scale[v] * total / 4 / quant))
+                ordered = [coefficients[i] for i in zz]
+
+                def magnitude(value):
+                    size = abs(value).bit_length()
+                    return size, (value if value >= 0 else value + (1 << size) - 1)
+
+                size, bits = magnitude(ordered[0] - previous[c])
+                previous[c] = ordered[0]
+                symbols.append(("dc", size, bits, size))
+                run = 0
+                last = max((i for i in range(1, 64) if ordered[i]), default=0)
+                for i in range(1, last + 1):
+                    if ordered[i] == 0:
+                        run += 1
+                        continue
+                    while run > 15:
+                        symbols.append(("ac", 0xF0, 0, 0))
+                        run -= 16
+                    size, bits = magnitude(ordered[i])
+                    symbols.append(("ac", (run << 4) | size, bits, size))
+                    run = 0
+                if last < 63:
+                    symbols.append(("ac", 0x00, 0, 0))
+
+    def table(kind):
+        # Every used symbol gets the same length; the all-ones code stays unused.
+        used = sorted({s for t, s, _, _ in symbols if t == kind})
+        length = max(1, (len(used)).bit_length())
+        counts = [0] * 16
+        counts[length - 1] = len(used)
+        codes = {s: (i, length) for i, s in enumerate(used)}
+        return bytes(counts) + bytes(used), codes
+
+    dc_spec, dc_codes = table("dc")
+    ac_spec, ac_codes = table("ac")
+
+    out, acc, count = bytearray(), 0, 0
+    for kind, symbol, extra, extra_len in symbols:
+        code, length = (dc_codes if kind == "dc" else ac_codes)[symbol]
+        for value, n in ((code, length), (extra, extra_len)):
+            acc = (acc << n) | value
+            count += n
+            while count >= 8:
+                byte = (acc >> (count - 8)) & 0xFF
+                out.append(byte)
+                if byte == 0xFF:
+                    out.append(0)
+                count -= 8
+    if count:
+        byte = ((acc << (8 - count)) | ((1 << (8 - count)) - 1)) & 0xFF
+        out.append(byte)
+        if byte == 0xFF:
+            out.append(0)
+
+    def segment(marker, body):
+        return bytes([0xFF, marker]) + struct.pack(">H", len(body) + 2) + body
+
+    tiff = b"MM\0*" + struct.pack(">IH", 8, 1) + struct.pack(">HHIHH", 0x0112, 3, 1, orientation, 0) + struct.pack(">I", 0)
+    components = b"".join(bytes([i, 0x11, 0]) for i in (1, 2, 3))
+    return (b"\xFF\xD8"
+            + segment(0xE1, b"Exif\0\0" + tiff)
+            + segment(0xDB, bytes([0]) + bytes([quant] * 64))
+            + segment(0xC0, struct.pack(">BHHB", 8, height, width, 3) + components)
+            + segment(0xC4, bytes([0x00]) + dc_spec)
+            + segment(0xC4, bytes([0x10]) + ac_spec)
+            + segment(0xDA, bytes([3]) + b"".join(bytes([i, 0]) for i in (1, 2, 3)) + bytes([0, 63, 0]))
+            + bytes(out) + b"\xFF\xD9")
+
+
+def turned(x, y):
+    # A blue corner block, so a wrong rotation or mirror shows.
+    return (40, 60, 220) if x < 4 and y < 4 else (min(255, 60 + x * 12), 90, 40 + y * 10)
+
+
 def tone(freq, rate, ms, amp):
     return [amp * math.sin(2 * math.pi * freq * k / rate) for k in range(rate * ms // 1000)]
 
@@ -105,6 +209,8 @@ ASSETS = {
     "gradient.png": lambda: png(48, 32, gradient),
     "badge.png": lambda: png(8, 8, badge),
     # Partly transparent, so the alpha channel's code is exercised too.
+    # Stored 16x8 with EXIF orientation 6: displayed 8x16, turned clockwise.
+    "turned.jpg": lambda: jpeg_baseline(16, 8, turned, orientation=6),
     "swatch.webp": lambda: webp_lossless(12, 10, lambda x, y: (x * 21, y * 25, 255 - x * 10, 255 - (x + y) * 12)),
     "tone-44k-mono.wav": lambda: wav(44100, 1, [(s,) for s in tone(440, 44100, 250, 0.4)]),
     "chord-48k-stereo.wav": lambda: wav(48000, 2, list(zip(tone(330, 48000, 200, 0.3), tone(550, 48000, 200, 0.3)))),
@@ -133,6 +239,8 @@ if args.voice_recipe:
 # Read before any package folder is removed, since the default lives inside one.
 voice_m4a = open(args.voice or os.path.join(root, "audio-mix", "package", "assets", "voice.m4a"), "rb").read()
 lato = hashlib.sha256(open(os.path.join(repo, "tests", "fonts", "Lato-Regular.ttf"), "rb").read()).hexdigest()
+noto_arabic = hashlib.sha256(
+    open(os.path.join(repo, "tests", "fonts", "NotoSansArabic-Regular.ttf"), "rb").read()).hexdigest()
 
 
 def at(x, y, **more):
@@ -325,6 +433,30 @@ CASES = {
                   "color": "#000000ff", "transform": at(4, 36)}]}},
         ],
     }, ["gradient.png"]),
+    "image-jpeg-exif": ({
+        "output": {"kind": "image", "width": 32, "height": 24, "background": "#ffffffff"},
+        "assets": {"turned": {"path": "assets/turned.jpg"}},
+        "layers": [
+            {"id": "native", "type": "image", "asset": "turned", "transform": at(2, 2)},
+            {"id": "wide", "type": "image", "asset": "turned", "width": 12, "transform": at(14, 2)},
+        ],
+    }, ["turned.jpg"]),
+    "image-text-rtl": ({
+        "output": {"kind": "image", "width": 160, "height": 72, "background": "#ffffffff"},
+        "assets": {"arabic": {"ref": {"family": "Noto Sans Arabic", "style": "Regular", "sha256": noto_arabic}}},
+        "layers": [
+            # An Arabic paragraph with a number inside, which keeps its left-to-right order.
+            # The font has no Latin letters or ASCII brackets, so none are used.
+            {"id": "numbers", "type": "text", "text": "مرحبا 2026 بكم",
+             "font": "arabic", "size_px": 18, "color": "#202020ff", "transform": at(4, 2)},
+            # Joined letters, wrapped and right-aligned in a box.
+            {"id": "wrapped", "type": "text",
+             "text": "السلام عليكم "
+                     "ورحمة الله",
+             "font": "arabic", "size_px": 16, "color": "#803020ff", "box_width": 110, "align": "right",
+             "transform": at(46, 30)},
+        ],
+    }, []),
     "image-webp": ({
         "output": {"kind": "image", "width": 40, "height": 24, "background": "#204060ff"},
         "assets": {"swatch": {"path": "assets/swatch.webp"}},

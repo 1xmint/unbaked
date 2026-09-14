@@ -25,6 +25,8 @@ Referenced fonts are in `tests/fonts/`, matched by SHA-256.
 | `image-transforms` | Bilinear upscaling, mip chain downscaling, rotation, anchors, aspect fit, keyframes at `at_ms` |
 | `image-groups-masks` | Isolated group opacity, alpha and inverted luminance masks, nested timing, group effects |
 | `image-effects` | Blur, shadow, adjust, effect chains, group blur with `difference` |
+| `image-jpeg-exif` | A baseline JPEG with EXIF orientation 6, at its own size and stretched |
+| `image-text-rtl` | Right-to-left Arabic with joined letters, a number inside it, wrapping and right alignment |
 | `image-webp` | A lossless WebP with alpha, at its own size and scaled |
 | `image-text` | Wrapping, centre and right alignment, line height, rotation, shadow, text as a mask |
 | `video-motion` | Easing curves including an overshooting Bézier, `hold`, every transition type, nested start and end |
@@ -33,7 +35,8 @@ Referenced fonts are in `tests/fonts/`, matched by SHA-256.
 | `audio-mix` | Resampling 44.1 kHz to 48 kHz, mono to stereo, gain keyframes, fades, trim, duration, mute, hard clipping, an M4A source with an edit list |
 | `audio-mono` | Stereo to mono, 48 kHz to 44.1 kHz |
 
-The PNG, WebP and WAV assets are small generated patterns. `clip.mp4` is
+The PNG, JPEG, WebP and WAV assets are small generated patterns; the generator
+writes the JPEG and WebP encoders out by hand. `clip.mp4` is
 `tests/video/frames-high.mp4`, and `voice.m4a` was rendered by this renderer
 from a 660 Hz tone.
 

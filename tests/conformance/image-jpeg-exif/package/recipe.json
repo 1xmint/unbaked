@@ -1,0 +1,35 @@
+{
+  "unbaked": 0,
+  "output": {
+    "kind": "image",
+    "width": 32,
+    "height": 24,
+    "background": "#ffffffff"
+  },
+  "assets": {
+    "turned": {
+      "path": "assets/turned.jpg"
+    }
+  },
+  "layers": [
+    {
+      "id": "native",
+      "type": "image",
+      "asset": "turned",
+      "transform": {
+        "x": 2,
+        "y": 2
+      }
+    },
+    {
+      "id": "wide",
+      "type": "image",
+      "asset": "turned",
+      "width": 12,
+      "transform": {
+        "x": 14,
+        "y": 2
+      }
+    }
+  ]
+}
