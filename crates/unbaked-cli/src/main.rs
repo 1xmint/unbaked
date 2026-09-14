@@ -12,6 +12,8 @@ use unbaked_core::json::Problem;
 use unbaked_core::package::Limits;
 use unbaked_core::{Status, open, pack};
 
+mod fonts;
+
 const HELP: &str = "\
 unbaked: check, read, unpack, pack and render Unbaked media files
 
@@ -23,10 +25,12 @@ Usage:
                                         Put a folder's package into a file, replacing its
                                         package. Writes <file> in place unless -o is given.
                                         Keeps the file's bake.json if the folder has none.
-  unbaked render <file-or-dir> [-o <out>]
+  unbaked render <file-or-dir> [-o <out>] [--fonts <dir>]
                                         Render the recipe and write a fresh Unbaked file.
                                         Renders a file in place unless -o is given; a
                                         folder needs -o. Only image output for now.
+                                        Fonts the recipe references but does not pack are
+                                        looked up by SHA-256 in <dir> and its subfolders.
 
 Exit codes:
   0  success (check: fresh)
@@ -97,6 +101,7 @@ fn run() -> Result<u8, Fail> {
     let mut json_output = false;
     let mut into: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
+    let mut font_dir: Option<PathBuf> = None;
     while let Some(arg) = args.next()? {
         match arg {
             Value(v) => positional.push(v),
@@ -105,6 +110,7 @@ fn run() -> Result<u8, Fail> {
             Short('o') | Long("output") if command == "pack" || command == "render" => {
                 out = Some(args.value()?.into())
             }
+            Long("fonts") if command == "render" => font_dir = Some(args.value()?.into()),
             Long("help") | Short('h') => {
                 print!("{HELP}");
                 return Ok(0);
@@ -136,12 +142,17 @@ fn run() -> Result<u8, Fail> {
             let into = into.ok_or_else(|| Fail::Usage("pack needs --into <file>".into()))?;
             pack_into(&paths[0], &into, out.as_deref().unwrap_or(&into))
         }
-        "render" => render(&wanted(1)?[0], out.as_deref()),
+        "render" => render(&wanted(1)?[0], out.as_deref(), font_dir),
         other => Err(Fail::Usage(format!("unknown command {other:?}"))),
     }
 }
 
-fn render(input: &Path, out: Option<&Path>) -> Result<u8, Fail> {
+fn render(input: &Path, out: Option<&Path>, font_dir: Option<PathBuf>) -> Result<u8, Fail> {
+    if let Some(dir) = &font_dir
+        && !dir.is_dir()
+    {
+        return Err(Fail::Io(format!("{}: not a folder", dir.display())));
+    }
     let (files, out) = if input.is_dir() {
         let out = out.ok_or_else(|| Fail::Usage("render of a folder needs -o <out>".into()))?;
         let files = pack::read_folder(input, Limits::default()).map_err(|e| match e {
@@ -152,12 +163,15 @@ fn render(input: &Path, out: Option<&Path>) -> Result<u8, Fail> {
     } else {
         (opened_files(input)?, out.unwrap_or(input))
     };
-    let file = unbaked_render::render(&files, unbaked_render::RenderLimits::default()).map_err(
-        |e| match e {
-            unbaked_render::RenderError::Recipe(_) => Fail::Invalid(e.to_string()),
-            other => Fail::Format(format!("{}: {other}", input.display())),
-        },
-    )?;
+    let fonts: Box<dyn unbaked_render::FontSource> = match font_dir {
+        Some(dir) => Box::new(fonts::FontFolder::new(dir)),
+        None => Box::new(unbaked_render::NoFonts),
+    };
+    let limits = unbaked_render::RenderLimits::default();
+    let file = unbaked_render::render(&files, fonts.as_ref(), limits).map_err(|e| match e {
+        unbaked_render::RenderError::Recipe(_) => Fail::Invalid(e.to_string()),
+        other => Fail::Format(format!("{}: {other}", input.display())),
+    })?;
     write_replacing(out, &file)?;
     eprintln!("rendered {}", out.display());
     Ok(0)

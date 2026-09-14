@@ -316,13 +316,13 @@ that references the same asset. Past the end of the source, the last frame is he
 
 | Field | Required | Default | Meaning |
 |---|---|---|---|
-| `text` | yes | | The string. `\n` forces a line break. |
+| `text` | yes | | The string. `\n` forces a line break (section 5.6). |
 | `font` | yes | | Id of a font asset |
 | `size_px` | yes | | Font size in pixels (em size), > 0 |
 | `color` | no | `"#000000ff"` | Fill color |
 | `line_height` | no | `1.2` | Multiple of `size_px` between baselines |
 | `align` | no | `"left"` | `left`, `center` or `right`, within the box |
-| `box_width` | no | | Wrap width in pixels. Without it, lines only break at `\n`. |
+| `box_width` | no | | Wrap width in pixels. Without it, lines only break where forced. |
 | `font_index` | no | `0` | Face index for font collections |
 
 System fonts are never used by name. A text layer draws only with a packed font
@@ -349,7 +349,7 @@ Before any transform, every layer occupies a box with its top-left at `0,0`:
 - `solid`: `width` × `height`.
 - `group`: the canvas, `output.width` × `output.height`.
 - `text`:
-  - width is `box_width` if given, otherwise the widest line's advance width;
+  - width is `box_width` if given, otherwise the widest line's advance width, trailing white space not counted (section 5.6);
   - height is `line_height × size_px × line count`;
   - the first baseline sits at `(line_height × size_px − (ascender + descender)) / 2 + ascender` from the top, using the font's `hhea` ascender and descender magnitudes.
 
@@ -580,6 +580,9 @@ Each output pixel centre `(px + 0.5, py + 0.5)` is mapped back through `M⁻¹`.
 The layer's source image (the decoded image, video frame, rendered text or solid
 fill, after effects) is sampled there. A solid's source image is
 `ceil(width) × ceil(height)` pixels of its colour, mapped onto its exact box.
+Rendered text has one source pixel per box unit, with the box's top-left corner
+on a pixel corner. The image covers all glyph ink, which may reach past the box,
+the same way effects grow an image.
 
 **Sampling.** Let `s` be the smaller of the lengths of `M`'s two column vectors:
 how many canvas pixels one source pixel covers along each source axis.
@@ -626,10 +629,20 @@ animatable; `color` is not.
 
 ### 5.6 Text
 
-- Text is shaped with OpenType shaping (HarfBuzz behaviour is the reference): default features, direction and script detected per run.
-- With `box_width`, lines wrap at Unicode UAX #14 break opportunities; a word wider than the box is not split.
-- Each line is positioned within the box by `align`; lines step down by `line_height × size_px`.
-- Glyph outlines are filled with the non-zero rule and anti-aliased by exact area coverage.
+**Lines.**
+- The text is first split at Unicode UAX #14 mandatory breaks: `\n`, `\r\n`, `\r`, U+000B, U+000C, U+0085, U+2028 and U+2029. The break characters are not drawn. Text that ends with a break has an empty last line.
+- Without `box_width`, each piece is one line.
+- With `box_width`, each piece wraps greedily at UAX #14 break opportunities. A line ends at the last opportunity where it still fits (width ≤ `box_width`). Widths for this come from shaping the whole piece once and adding up the advances of the glyphs whose clusters fall inside the line. A stretch between two opportunities that is wider than the box gets a line of its own and is not split.
+- White space (the Unicode `White_Space` property) at the end of a line is not measured and not drawn.
+
+**Shaping.**
+- Each line is shaped on its own with OpenType shaping and default features. HarfBuzz behaviour is the reference.
+- Direction comes from the Unicode Bidirectional Algorithm (UAX #9). The first strong character sets the paragraph direction (left to right if there is none), and runs are reordered for display per line (rules L1 and L2).
+- Each directional run is split into runs of one script (UAX #24 `Script` property). Common and Inherited characters join the run before them, or the first run of the line. Each run is shaped with its own direction and script.
+
+**Placing.**
+- Each line is positioned within the box by `align`, and lines step down by `line_height × size_px`.
+- Glyph outlines are unhinted. A pixel's coverage is the signed area of every outline inside it, windings added, taken as an absolute value and capped at 1. Away from edges this is the non-zero fill rule, and along a single edge it is exact area coverage.
 
 ### 5.7 Final output
 

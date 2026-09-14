@@ -5,7 +5,7 @@ use unbaked_core::recipe;
 use unbaked_core::{Status, open, pack};
 use unbaked_render::image::{Pixmap, decode_png, encode_png};
 use unbaked_render::scene::render_still;
-use unbaked_render::{RenderError, RenderLimits, render};
+use unbaked_render::{FontSource, NoFonts, RenderError, RenderLimits, render};
 
 fn still(recipe_json: &str, files: &[(&str, &[u8])]) -> Result<Pixmap, RenderError> {
     let recipe = recipe::parse(recipe_json.as_bytes()).expect("test recipe parses");
@@ -15,7 +15,7 @@ fn still(recipe_json: &str, files: &[(&str, &[u8])]) -> Result<Pixmap, RenderErr
             .find(|(name, _)| *name == path)
             .map(|(_, data)| *data)
     };
-    render_still(&recipe, &lookup, RenderLimits::default())
+    render_still(&recipe, &lookup, &NoFonts, RenderLimits::default())
 }
 
 fn image_recipe(width: u32, height: u32, extra_output: &str, layers: &str) -> String {
@@ -159,27 +159,27 @@ fn image_layers_scale_by_aspect_ratio_and_fade_at_their_edges() {
 
 #[test]
 fn unsupported_features_are_refused_clearly() {
-    let text = r#"{"id": "t", "type": "text", "text": "hi", "font": "f", "size_px": 10}"#;
-    let recipe = image_recipe(1, 1, "", text);
+    let video = r#"{"id": "v", "type": "video", "asset": "clip"}"#;
+    let recipe = image_recipe(1, 1, "", video);
     assert_eq!(
         still(&recipe, &[]).unwrap_err(),
-        RenderError::Unsupported("/layers/0: text layers are not rendered yet".into())
+        RenderError::Unsupported("/layers/0: video layers are not rendered yet".into())
     );
     let nested = image_recipe(
         1,
         1,
         "",
-        &format!(r#"{{"id": "g", "type": "group", "layers": [{text}]}}"#),
+        &format!(r#"{{"id": "g", "type": "group", "layers": [{video}]}}"#),
     );
     assert_eq!(
         still(&nested, &[]).unwrap_err(),
-        RenderError::Unsupported("/layers/0/layers/0: text layers are not rendered yet".into())
+        RenderError::Unsupported("/layers/0/layers/0: video layers are not rendered yet".into())
     );
     let hidden = image_recipe(
         1,
         1,
         "",
-        &text.replace("\"size_px\"", "\"hidden\": true, \"size_px\""),
+        &video.replace("\"asset\"", "\"hidden\": true, \"asset\""),
     );
     assert!(
         still(&hidden, &[]).is_ok(),
@@ -380,10 +380,10 @@ fn rendering_a_package_makes_a_fresh_file() {
     .map(|(n, d)| (n.to_owned(), d))
     .collect();
 
-    let file = render(&files, RenderLimits::default()).unwrap();
+    let file = render(&files, &NoFonts, RenderLimits::default()).unwrap();
     assert_eq!(
         file,
-        render(&files, RenderLimits::default()).unwrap(),
+        render(&files, &NoFonts, RenderLimits::default()).unwrap(),
         "renders repeat exactly"
     );
     let opened = open(&file, Limits::default()).unwrap();
@@ -397,7 +397,7 @@ fn rendering_a_package_makes_a_fresh_file() {
     let mut broken = files.clone();
     broken.insert("recipe.json".into(), bad.into_bytes());
     assert!(matches!(
-        render(&broken, RenderLimits::default()),
+        render(&broken, &NoFonts, RenderLimits::default()),
         Err(RenderError::Recipe(_))
     ));
 }
@@ -407,9 +407,140 @@ fn oversized_canvases_fail_with_a_clear_limit() {
     let recipe = image_recipe(100, 100, "", "");
     let recipe = recipe::parse(recipe.as_bytes()).unwrap();
     let lookup = |_: &str| None;
-    let err = render_still(&recipe, &lookup, RenderLimits { max_pixels: 9_999 }).unwrap_err();
+    let err = render_still(
+        &recipe,
+        &lookup,
+        &NoFonts,
+        RenderLimits { max_pixels: 9_999 },
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "the canvas needs 10000 pixels, more than the limit of 9999"
     );
+}
+
+const LATO: &[u8] = include_bytes!("../../../tests/fonts/Lato-Regular.ttf");
+const OFL: &[u8] = include_bytes!("../../../tests/fonts/OFL.txt");
+
+/// Hands out Lato for its own SHA-256, or other bytes claiming to be it.
+struct Fonts(&'static [u8]);
+
+impl FontSource for Fonts {
+    fn find(&self, _sha256: &str) -> Option<Vec<u8>> {
+        Some(self.0.to_vec())
+    }
+}
+
+fn text_recipe(font_asset: &str) -> String {
+    format!(
+        r##"{{"unbaked": 0, "output": {{"kind": "image", "width": 60, "height": 40, "background": "#ffffffff"}},
+            "assets": {{"lato": {font_asset}}},
+            "layers": [{{"id": "t", "type": "text", "text": "Hi", "font": "lato", "size_px": 30,
+                "color": "#000000ff", "transform": {{"x": 10, "y": 2}}}}]}}"##
+    )
+}
+
+const PACKED: &str = r#"{"path": "assets/fonts/Lato-Regular.ttf", "license": {"spdx": "OFL-1.1", "file": "assets/fonts/OFL.txt"}}"#;
+
+fn dark_pixels(image: &Pixmap) -> Vec<(u32, u32)> {
+    let mut dark = Vec::new();
+    for y in 0..image.height {
+        for x in 0..image.width {
+            if at(image, x, y)[0] < 128 {
+                dark.push((x, y));
+            }
+        }
+    }
+    dark
+}
+
+#[test]
+fn text_layers_render_with_a_packed_font() {
+    let files: pack::Files = [
+        ("recipe.json", text_recipe(PACKED).into_bytes()),
+        ("assets/fonts/Lato-Regular.ttf", LATO.to_vec()),
+        ("assets/fonts/OFL.txt", OFL.to_vec()),
+    ]
+    .into_iter()
+    .map(|(n, d)| (n.to_owned(), d))
+    .collect();
+    let file = render(&files, &NoFonts, RenderLimits::default()).unwrap();
+    assert_eq!(
+        file,
+        render(&files, &NoFonts, RenderLimits::default()).unwrap()
+    );
+    assert_eq!(
+        open(&file, Limits::default()).unwrap().check(),
+        Status::Fresh
+    );
+
+    let shown = decode_png(&file, 10_000).unwrap();
+    let dark = dark_pixels(&shown);
+    assert!(dark.len() > 50, "{} dark pixels", dark.len());
+    // "H" has a left side bearing, so no ink reaches left of the box at x = 10.
+    let (min_x, max_x) = (
+        dark.iter().map(|p| p.0).min().unwrap(),
+        dark.iter().map(|p| p.0).max().unwrap(),
+    );
+    let (min_y, max_y) = (
+        dark.iter().map(|p| p.1).min().unwrap(),
+        dark.iter().map(|p| p.1).max().unwrap(),
+    );
+    assert!((11..16).contains(&min_x), "{min_x}");
+    assert!(max_x < 10 + 30, "{max_x}");
+    // Cap height sits below the box top at y = 2; the baseline is above the box bottom at 2 + 36.
+    assert!(min_y > 2 && max_y < 38, "{min_y}..{max_y}");
+}
+
+#[test]
+fn referenced_fonts_are_found_by_fingerprint_only() {
+    let sha = unbaked_core::sha256_hex(LATO);
+    let reference =
+        format!(r#"{{"ref": {{"family": "Lato", "style": "Regular", "sha256": "{sha}"}}}}"#);
+    let recipe = recipe::parse(text_recipe(&reference).as_bytes()).unwrap();
+    let no_files = |_: &str| None;
+
+    let err = render_still(&recipe, &no_files, &NoFonts, RenderLimits::default()).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "font \"Lato\" (Regular) was not found: no font file given has its SHA-256"
+    );
+    // Bytes whose hash differs are refused, even when a source offers them.
+    let wrong = render_still(&recipe, &no_files, &Fonts(OFL), RenderLimits::default());
+    assert!(matches!(wrong, Err(RenderError::FontNotFound { .. })));
+
+    let referenced =
+        render_still(&recipe, &no_files, &Fonts(LATO), RenderLimits::default()).unwrap();
+    let packed = still(
+        &text_recipe(PACKED),
+        &[("assets/fonts/Lato-Regular.ttf", LATO)],
+    )
+    .unwrap();
+    assert_eq!(referenced, packed);
+}
+
+#[test]
+fn text_moves_with_its_transform_and_takes_effects() {
+    let recipe = text_recipe(PACKED);
+    let files = [("assets/fonts/Lato-Regular.ttf", LATO)];
+    let base = dark_pixels(&still(&recipe, &files).unwrap());
+    let moved = recipe.replace(r#""x": 10, "y": 2"#, r#""x": 15, "y": 2"#);
+    let shifted = dark_pixels(&still(&moved, &files).unwrap());
+    assert_eq!(
+        shifted,
+        base.iter().map(|&(x, y)| (x + 5, y)).collect::<Vec<_>>()
+    );
+
+    // A shadow draws under the text, offset down and right.
+    let shadowed = recipe.replace(
+        r##""color": "#000000ff","##,
+        r##""color": "#000000ff", "effects": [{"type": "shadow", "dx": 20, "dy": 0, "color": "#ff0000ff"}],"##,
+    );
+    let out = still(&shadowed, &files).unwrap();
+    let red = (0..out.width)
+        .flat_map(|x| (0..out.height).map(move |y| (x, y)))
+        .filter(|&(x, y)| at(&out, x, y) == [255, 0, 0, 255])
+        .count();
+    assert!(red > 50, "{red} red pixels");
 }

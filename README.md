@@ -23,12 +23,17 @@ Early. The format rules are drafted in [SPEC.md](SPEC.md). Why it exists and
 where it is going: [VISION.md](VISION.md).
 
 Files can be checked, unpacked, repacked and rendered. Rendering covers still
-images with solid, image and group layers so far: masks, blur, shadow and
+images with solid, image, text and group layers so far: masks, blur, shadow and
 adjust effects, transforms, opacity, blend modes, keyframes and transitions.
-Text, sound and video come next.
+Text is shaped with kerning, ligatures and right-to-left runs, and wraps inside
+its box. Sound and video come next.
+
+Fonts a recipe references without packing are looked up by fingerprint in a
+folder you name with `--fonts`. This repository ships no fonts except the one
+its tests use.
 
 ```
-cargo run -p unbaked-cli -- render poster/ -o poster.unbaked.png
+cargo run -p unbaked-cli -- render poster/ -o poster.unbaked.png --fonts ~/fonts
 cargo run -p unbaked-cli -- check poster.unbaked.png --json
 cargo run -p unbaked-cli -- unpack poster.unbaked.png edit/
 cargo run -p unbaked-cli -- pack edit/ --into poster.unbaked.png
