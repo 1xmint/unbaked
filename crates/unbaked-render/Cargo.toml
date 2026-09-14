@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 harfrust = "0.13.3"
+openh264 = "0.9.8"
 png = "0.18.1"
 rusty_aac = "0.5.0"
 serde_json = "1.0.151"
