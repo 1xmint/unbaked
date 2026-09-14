@@ -162,11 +162,13 @@ fn image_layers_scale_by_aspect_ratio_and_fade_at_their_edges() {
 const CLIP: &[u8] = include_bytes!("../../../tests/video/frames-high.mp4");
 
 /// The frame number in the test clip: its top-left block has luma 24 + 16·n.
+#[cfg(feature = "video")]
 fn clip_frame(image: &Pixmap, x: u32, y: u32) -> i32 {
     let luma = f64::from(at(image, x, y)[1]) / 255.0 * 219.0 + 16.0;
     ((luma - 24.0) / 16.0).round() as i32
 }
 
+#[cfg(feature = "video")]
 fn video_recipe(output: &str, layer: &str) -> String {
     format!(
         r#"{{"unbaked": 0, "output": {output},
@@ -175,6 +177,7 @@ fn video_recipe(output: &str, layer: &str) -> String {
     )
 }
 
+#[cfg(feature = "video")]
 #[test]
 fn video_layers_show_the_frame_at_their_source_time() {
     let files = [("assets/clip.mp4", CLIP)];
@@ -216,6 +219,7 @@ fn video_layers_show_the_frame_at_their_source_time() {
     ));
 }
 
+#[cfg(feature = "video")]
 #[test]
 fn two_layers_can_show_one_clip_at_different_times() {
     use unbaked_render::scene::Frames;
@@ -256,6 +260,7 @@ fn two_layers_can_show_one_clip_at_different_times() {
     }
 }
 
+#[cfg(feature = "video")]
 #[test]
 fn video_recipes_render_a_fresh_mp4() {
     use unbaked_render::mp4;
@@ -879,10 +884,14 @@ fn a_passed_deadline_stops_sound_and_video() {
         "recipe.json".to_owned(),
         br#"{"unbaked": 0, "output": {"kind": "video", "width": 16, "height": 16, "fps": "10", "duration_ms": 100}, "assets": {}, "layers": []}"#.to_vec(),
     )]);
-    for files in [audio, video] {
+    let timed_out = RenderError::TimedOut { limit_ms: 0 };
+    assert_eq!(render(&audio, &NoFonts, limits).unwrap_err(), timed_out);
+    if cfg!(feature = "video") {
+        assert_eq!(render(&video, &NoFonts, limits).unwrap_err(), timed_out);
+    } else {
         assert_eq!(
-            render(&files, &NoFonts, limits).unwrap_err(),
-            RenderError::TimedOut { limit_ms: 0 }
+            render(&video, &NoFonts, RenderLimits::default()).unwrap_err(),
+            RenderError::Unsupported(unbaked_render::NO_VIDEO.into())
         );
     }
 }
@@ -1005,5 +1014,17 @@ fn estimates_read_sizes_from_the_recipe_and_headers() {
     assert!(
         hostile.work_units > 1000 * effects.work_units,
         "{hostile:?}"
+    );
+}
+
+#[cfg(not(feature = "video"))]
+#[test]
+fn without_the_video_feature_video_layers_fail_clearly() {
+    let recipe = r#"{"unbaked": 0, "output": {"kind": "image", "width": 8, "height": 8},
+        "assets": {"clip": {"path": "assets/clip.mp4"}},
+        "layers": [{"id": "v", "type": "video", "asset": "clip"}]}"#;
+    assert_eq!(
+        still(recipe, &[("assets/clip.mp4", CLIP)]).unwrap_err(),
+        RenderError::Unsupported(unbaked_render::NO_VIDEO.into())
     );
 }

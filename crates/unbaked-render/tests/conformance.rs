@@ -72,6 +72,10 @@ fn conformance_cases_match_their_expected_output() {
     let mut failures = Vec::new();
     for case in &cases {
         let name = case.file_name().unwrap().to_string_lossy();
+        if !cfg!(feature = "video") && name == "video-clip" {
+            // Its video layers need the video feature.
+            continue;
+        }
         let result = render_case(case).and_then(|outputs| {
             if bless {
                 bless_case(case, &outputs)

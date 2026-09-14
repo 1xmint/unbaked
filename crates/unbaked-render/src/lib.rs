@@ -12,6 +12,7 @@ pub mod effects;
 pub mod estimate;
 pub mod image;
 pub mod motion;
+#[cfg(feature = "video")]
 pub mod movie;
 pub mod mp4;
 pub mod preview;
@@ -19,9 +20,15 @@ pub mod scene;
 pub mod sound;
 pub mod text;
 pub mod timing;
+#[cfg(feature = "video")]
 pub mod video;
 
 pub use scene::{Deadline, RenderLimits};
+
+/// Why a video layer, video asset or video output fails in a build without the
+/// `video` feature.
+pub const NO_VIDEO: &str =
+    "this build of the renderer has no video support (the video feature is off)";
 
 /// Names this renderer in `bake.json`.
 pub const RENDERER: &str = concat!("unbaked-render ", env!("CARGO_PKG_VERSION"));
@@ -180,7 +187,10 @@ pub fn render(
             limits.check_time()?;
             sound::encode_m4a(&pcm).map_err(RenderError::Encode)?
         }
+        #[cfg(feature = "video")]
         OutputKind::Video => movie::render_video(&recipe, &file, fonts, limits)?,
+        #[cfg(not(feature = "video"))]
+        OutputKind::Video => return Err(RenderError::Unsupported(NO_VIDEO.into())),
     };
 
     let assets: serde_json::Map<String, serde_json::Value> = bake::referenced_files(&recipe)

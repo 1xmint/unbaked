@@ -48,6 +48,26 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test --workspace
 
+  # Images and sound with no C video code, as a service taking files from strangers builds it.
+  no-video:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: no-video
+      - run: cargo test -p unbaked-render -p unbaked-cli --no-default-features
+      - name: No OpenH264 in the build
+        run: |
+          if cargo tree -p unbaked-cli --no-default-features -e normal | grep -i openh264; then
+            exit 1
+          fi
+
   schema:
     runs-on: ubuntu-latest
     steps:
@@ -63,7 +83,7 @@ jobs:
   # Single required check for branch protection, so the job list can change freely.
   ci-ok:
     if: always()
-    needs: [lint, test, schema]
+    needs: [lint, test, no-video, schema]
     runs-on: ubuntu-latest
     steps:
       - run: |

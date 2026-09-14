@@ -14,8 +14,12 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+default = ["video"]
+video = ["unbaked-render/video"]
+
 [dependencies]
 lexopt = "0.3.2"
 serde_json = "1.0.151"
 unbaked-core = { path = "../unbaked-core" }
-unbaked-render = { path = "../unbaked-render" }
+unbaked-render = { path = "../unbaked-render", default-features = false }

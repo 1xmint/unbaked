@@ -13,11 +13,17 @@ unsafe_code = "deny"
 [lints.clippy]
 all = { level = "warn", priority = -1 }
 
+[features]
+default = ["video"]
+# Video layers and video output, through OpenH264 (C code). Without it,
+# images and sound render with no C decoder in the build.
+video = ["dep:openh264", "dep:openh264-sys2"]
+
 [dependencies]
 harfrust = "0.13.3"
 image-webp = "0.2.4"
-openh264 = "0.9.8"
-openh264-sys2 = "0.9.8"
+openh264 = { version = "0.9.8", optional = true }
+openh264-sys2 = { version = "0.9.8", optional = true }
 png = "0.18.1"
 rusty_aac = "0.5.0"
 serde_json = "1.0.151"
