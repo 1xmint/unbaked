@@ -538,182 +538,249 @@ pub struct AudioTrack<'a> {
     pub length: u64,
 }
 
-/// Writes an M4A file holding one AAC-LC track, with the index before the data
-/// so it can play while downloading.
-pub fn write_m4a(track: &AudioTrack) -> Vec<u8> {
+/// An H.264 track to write: progressive frames at a constant rate, each shown
+/// in the order it is stored.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoTrack<'a> {
+    pub width: u16,
+    pub height: u16,
+    /// Each frame lasts `delta / timescale` seconds.
+    pub timescale: u32,
+    pub delta: u32,
+    /// The sequence and picture parameter sets, each a NAL unit with its header.
+    pub sps: &'a [u8],
+    pub pps: &'a [u8],
+    /// One frame per sample, NAL units with 4-byte length prefixes.
+    pub samples: &'a [Vec<u8>],
+    /// Which samples are key frames.
+    pub sync: &'a [bool],
+    /// How long to present, in milliseconds. The edit list cuts the last frame short.
+    pub length_ms: u64,
+}
+
+/// One track as the writer lays it out.
+struct Out<'a> {
+    handler: &'a [u8; 4],
+    name: &'a [u8],
+    media_header: Vec<u8>,
+    entry: Vec<u8>,
+    timescale: u32,
+    /// Every sample lasts this long, in `timescale` units.
+    delta: u32,
+    samples: &'a [Vec<u8>],
+    /// Key frames, 1-based; `None` when every sample is one.
+    sync: Option<Vec<u32>>,
+    /// The single edit: its length in movie units and where in the media it starts.
+    edit_duration: u64,
+    media_time: u64,
+    volume: u16,
+    width: u16,
+    height: u16,
+    /// Samples per chunk, about a second's worth.
+    chunk: usize,
+}
+
+impl Out<'_> {
+    fn chunks(&self) -> usize {
+        self.samples.len().div_ceil(self.chunk)
+    }
+}
+
+fn audio_out<'a>(track: &AudioTrack<'a>, edit_duration: u64) -> Out<'a> {
     let rate = track.sample_rate;
-    let media_len = track.packets.len() as u64 * 1024;
     let data_len: usize = track.packets.iter().map(Vec::len).sum();
     let seconds = (track.length as f64 / f64::from(rate)).max(1e-9);
     let avg_bitrate = (data_len as f64 * 8.0 / seconds) as u32;
     let max_packet = track.packets.iter().map(Vec::len).max().unwrap_or(0) as u32;
     let peak_bitrate =
         u32::try_from(u64::from(max_packet) * 8 * u64::from(rate) / 1024).unwrap_or(u32::MAX);
-
-    let ftyp = boxed(
-        b"ftyp",
-        &cat(&[b"M4A ", &0u32.to_be_bytes(), b"M4A mp42isom"]),
+    let descriptor = |tag: u8, body: &[u8]| cat(&[&[tag, body.len() as u8], body]);
+    let decoder_config = descriptor(
+        4,
+        &cat(&[
+            &[0x40, 0x15],
+            &max_packet.to_be_bytes()[1..],
+            &avg_bitrate.max(peak_bitrate).to_be_bytes(),
+            &avg_bitrate.to_be_bytes(),
+            &descriptor(5, track.config),
+        ]),
     );
+    let es = descriptor(
+        3,
+        &cat(&[
+            &1u16.to_be_bytes(),
+            &[0],
+            &decoder_config,
+            &descriptor(6, &[2]),
+        ]),
+    );
+    let mp4a = boxed(
+        b"mp4a",
+        &cat(&[
+            &[0; 6],
+            &1u16.to_be_bytes(),
+            &[0; 8],
+            &track.channels.to_be_bytes(),
+            &16u16.to_be_bytes(),
+            &[0; 4],
+            &(if rate <= 0xFFFF { rate << 16 } else { 0 }).to_be_bytes(),
+            &full_box(b"esds", 0, 0, &es),
+        ]),
+    );
+    Out {
+        handler: b"soun",
+        name: b"Sound\0",
+        media_header: full_box(b"smhd", 0, 0, &[0; 4]),
+        entry: mp4a,
+        timescale: rate,
+        delta: 1024,
+        samples: track.packets,
+        sync: None,
+        edit_duration,
+        media_time: u64::from(track.priming),
+        volume: 0x0100,
+        width: 0,
+        height: 0,
+        chunk: (rate as usize / 1024).max(1),
+    }
+}
+
+fn video_out<'a>(track: &VideoTrack<'a>) -> Out<'a> {
+    let byte = |i: usize| track.sps.get(i).copied().unwrap_or(0);
+    let avcc = boxed(
+        b"avcC",
+        &cat(&[
+            &[1, byte(1), byte(2), byte(3), 0xFF, 0xE1],
+            &(track.sps.len() as u16).to_be_bytes(),
+            track.sps,
+            &[1],
+            &(track.pps.len() as u16).to_be_bytes(),
+            track.pps,
+        ]),
+    );
+    // BT.709 primaries, transfer and matrix, limited range (SPEC.md section 5.7).
+    let colr = boxed(
+        b"colr",
+        &cat(&[
+            b"nclx",
+            &1u16.to_be_bytes(),
+            &1u16.to_be_bytes(),
+            &1u16.to_be_bytes(),
+            &[0],
+        ]),
+    );
+    let avc1 = boxed(
+        b"avc1",
+        &cat(&[
+            &[0; 6],
+            &1u16.to_be_bytes(),
+            &[0; 16],
+            &track.width.to_be_bytes(),
+            &track.height.to_be_bytes(),
+            &0x0048_0000u32.to_be_bytes(),
+            &0x0048_0000u32.to_be_bytes(),
+            &[0; 4],
+            &1u16.to_be_bytes(),
+            &[0; 32],
+            &0x0018u16.to_be_bytes(),
+            &0xFFFFu16.to_be_bytes(),
+            &avcc,
+            &colr,
+        ]),
+    );
+    let sync = track
+        .sync
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| **s)
+        .map(|(i, _)| i as u32 + 1)
+        .collect();
+    Out {
+        handler: b"vide",
+        name: b"Video\0",
+        media_header: full_box(b"vmhd", 0, 1, &[0; 8]),
+        entry: avc1,
+        timescale: track.timescale,
+        delta: track.delta,
+        samples: track.samples,
+        sync: Some(sync),
+        edit_duration: track.length_ms,
+        media_time: 0,
+        volume: 0,
+        width: track.width,
+        height: track.height,
+        chunk: (track.timescale / track.delta.max(1)).max(1) as usize,
+    }
+}
+
+/// Writes an M4A file holding one AAC-LC track, with the index before the data
+/// so it can play while downloading.
+pub fn write_m4a(track: &AudioTrack) -> Vec<u8> {
+    write(
+        b"M4A ",
+        b"M4A mp42isom",
+        track.sample_rate,
+        &[audio_out(track, track.length)],
+    )
+}
+
+/// Writes an MP4 file holding an H.264 track and, if given, an AAC-LC track,
+/// index first. Both are presented for `video.length_ms`.
+pub fn write_mp4(video: &VideoTrack, audio: Option<&AudioTrack>) -> Vec<u8> {
+    let mut tracks = vec![video_out(video)];
+    if let Some(audio) = audio {
+        tracks.push(audio_out(audio, video.length_ms));
+    }
+    write(b"isom", b"isomiso2avc1mp41", 1000, &tracks)
+}
+
+fn write(brand: &[u8; 4], compatible: &[u8], movie_timescale: u32, tracks: &[Out]) -> Vec<u8> {
+    let ftyp = boxed(b"ftyp", &cat(&[brand, &0u32.to_be_bytes(), compatible]));
+    let most_chunks = tracks.iter().map(Out::chunks).max().unwrap_or(0);
+    // Chunks interleave: chunk i of each track in turn. Offsets are from the
+    // start of the media data.
+    let mut offsets: Vec<Vec<u64>> = vec![Vec::new(); tracks.len()];
+    let mut data_len = 0u64;
+    for i in 0..most_chunks {
+        for (t, track) in tracks.iter().enumerate() {
+            if i < track.chunks() {
+                offsets[t].push(data_len);
+                let end = ((i + 1) * track.chunk).min(track.samples.len());
+                data_len += track.samples[i * track.chunk..end]
+                    .iter()
+                    .map(|s| s.len() as u64)
+                    .sum::<u64>();
+            }
+        }
+    }
+
     let moov_for = |data_offset: u64| {
-        let wide = data_offset + data_len as u64 > u64::from(u32::MAX);
+        let wide = data_offset + data_len > u64::from(u32::MAX);
+        let movie_duration = tracks.iter().map(|t| t.edit_duration).max().unwrap_or(0);
         let mvhd = full_box(
             b"mvhd",
             1,
             0,
             &cat(&[
                 &[0; 16],
-                &rate.to_be_bytes(),
-                &track.length.to_be_bytes(),
+                &movie_timescale.to_be_bytes(),
+                &movie_duration.to_be_bytes(),
                 &0x0001_0000u32.to_be_bytes(),
                 &0x0100u16.to_be_bytes(),
                 &[0; 10],
                 &matrix(),
                 &[0; 24],
-                &2u32.to_be_bytes(),
+                &(tracks.len() as u32 + 1).to_be_bytes(),
             ]),
         );
-        let tkhd = full_box(
-            b"tkhd",
-            1,
-            3,
-            &cat(&[
-                &[0; 16],
-                &1u32.to_be_bytes(),
-                &[0; 4],
-                &track.length.to_be_bytes(),
-                &[0; 12],
-                &0x0100u16.to_be_bytes(),
-                &[0; 2],
-                &matrix(),
-                &[0; 8],
-            ]),
-        );
-        let elst = full_box(
-            b"elst",
-            1,
-            0,
-            &cat(&[
-                &1u32.to_be_bytes(),
-                &track.length.to_be_bytes(),
-                &u64::from(track.priming).to_be_bytes(),
-                &1u16.to_be_bytes(),
-                &0u16.to_be_bytes(),
-            ]),
-        );
-        let mdhd = full_box(
-            b"mdhd",
-            1,
-            0,
-            &cat(&[
-                &[0; 16],
-                &rate.to_be_bytes(),
-                &media_len.to_be_bytes(),
-                &0x55C4u16.to_be_bytes(),
-                &[0; 2],
-            ]),
-        );
-        let hdlr = full_box(
-            b"hdlr",
-            0,
-            0,
-            &cat(&[&[0; 4], b"soun", &[0; 12], b"Sound\0"]),
-        );
-        let smhd = full_box(b"smhd", 0, 0, &[0; 4]);
-        let dinf = boxed(
-            b"dinf",
-            &full_box(
-                b"dref",
-                0,
-                0,
-                &cat(&[&1u32.to_be_bytes(), &full_box(b"url ", 0, 1, &[])]),
-            ),
-        );
-
-        let descriptor = |tag: u8, body: &[u8]| cat(&[&[tag, body.len() as u8], body]);
-        let decoder_config = descriptor(
-            4,
-            &cat(&[
-                &[0x40, 0x15],
-                &max_packet.to_be_bytes()[1..],
-                &avg_bitrate.max(peak_bitrate).to_be_bytes(),
-                &avg_bitrate.to_be_bytes(),
-                &descriptor(5, track.config),
-            ]),
-        );
-        let es = descriptor(
-            3,
-            &cat(&[
-                &1u16.to_be_bytes(),
-                &[0],
-                &decoder_config,
-                &descriptor(6, &[2]),
-            ]),
-        );
-        let esds = full_box(b"esds", 0, 0, &es);
-        let mp4a = boxed(
-            b"mp4a",
-            &cat(&[
-                &[0; 6],
-                &1u16.to_be_bytes(),
-                &[0; 8],
-                &track.channels.to_be_bytes(),
-                &16u16.to_be_bytes(),
-                &[0; 4],
-                &(if rate <= 0xFFFF { rate << 16 } else { 0 }).to_be_bytes(),
-                &esds,
-            ]),
-        );
-        let stsd = full_box(b"stsd", 0, 0, &cat(&[&1u32.to_be_bytes(), &mp4a]));
-        let stts = full_box(
-            b"stts",
-            0,
-            0,
-            &cat(&[
-                &1u32.to_be_bytes(),
-                &(track.packets.len() as u32).to_be_bytes(),
-                &1024u32.to_be_bytes(),
-            ]),
-        );
-        let stsc = full_box(
-            b"stsc",
-            0,
-            0,
-            &cat(&[
-                &1u32.to_be_bytes(),
-                &1u32.to_be_bytes(),
-                &(track.packets.len() as u32).to_be_bytes(),
-                &1u32.to_be_bytes(),
-            ]),
-        );
-        let mut sizes = 0u32.to_be_bytes().to_vec();
-        sizes.extend_from_slice(&(track.packets.len() as u32).to_be_bytes());
-        for p in track.packets {
-            sizes.extend_from_slice(&(p.len() as u32).to_be_bytes());
+        let mut moov = mvhd;
+        for (t, track) in tracks.iter().enumerate() {
+            moov.extend_from_slice(&trak(track, t as u32 + 1, &offsets[t], data_offset, wide));
         }
-        let stsz = full_box(b"stsz", 0, 0, &sizes);
-        let chunk_offset = if wide {
-            full_box(
-                b"co64",
-                0,
-                0,
-                &cat(&[&1u32.to_be_bytes(), &data_offset.to_be_bytes()]),
-            )
-        } else {
-            full_box(
-                b"stco",
-                0,
-                0,
-                &cat(&[&1u32.to_be_bytes(), &(data_offset as u32).to_be_bytes()]),
-            )
-        };
-        let stbl = boxed(b"stbl", &cat(&[&stsd, &stts, &stsc, &stsz, &chunk_offset]));
-        let minf = boxed(b"minf", &cat(&[&smhd, &dinf, &stbl]));
-        let mdia = boxed(b"mdia", &cat(&[&mdhd, &hdlr, &minf]));
-        let trak = boxed(b"trak", &cat(&[&tkhd, &boxed(b"edts", &elst), &mdia]));
-        boxed(b"moov", &cat(&[&mvhd, &trak]))
+        boxed(b"moov", &moov)
     };
 
-    let mdat_header = if data_len as u64 + 8 > u64::from(u32::MAX) {
+    let mdat_header = if data_len + 8 > u64::from(u32::MAX) {
         16
     } else {
         8
@@ -727,21 +794,148 @@ pub fn write_m4a(track: &AudioTrack) -> Vec<u8> {
         moov = moov_for(data_offset);
     }
 
-    let mut out = Vec::with_capacity(data_offset as usize + data_len);
+    let mut out = Vec::with_capacity((data_offset + data_len) as usize);
     out.extend_from_slice(&ftyp);
     out.extend_from_slice(&moov);
     if mdat_header == 16 {
         out.extend_from_slice(&1u32.to_be_bytes());
         out.extend_from_slice(b"mdat");
-        out.extend_from_slice(&(data_len as u64 + 16).to_be_bytes());
+        out.extend_from_slice(&(data_len + 16).to_be_bytes());
     } else {
         out.extend_from_slice(&((data_len + 8) as u32).to_be_bytes());
         out.extend_from_slice(b"mdat");
     }
-    for p in track.packets {
-        out.extend_from_slice(p);
+    for i in 0..most_chunks {
+        for track in tracks {
+            if i < track.chunks() {
+                let end = ((i + 1) * track.chunk).min(track.samples.len());
+                for sample in &track.samples[i * track.chunk..end] {
+                    out.extend_from_slice(sample);
+                }
+            }
+        }
     }
     out
+}
+
+fn trak(track: &Out, id: u32, offsets: &[u64], data_offset: u64, wide: bool) -> Vec<u8> {
+    let n = track.samples.len();
+    let tkhd = full_box(
+        b"tkhd",
+        1,
+        3,
+        &cat(&[
+            &[0; 16],
+            &id.to_be_bytes(),
+            &[0; 4],
+            &track.edit_duration.to_be_bytes(),
+            &[0; 12],
+            &track.volume.to_be_bytes(),
+            &[0; 2],
+            &matrix(),
+            &(u32::from(track.width) << 16).to_be_bytes(),
+            &(u32::from(track.height) << 16).to_be_bytes(),
+        ]),
+    );
+    let elst = full_box(
+        b"elst",
+        1,
+        0,
+        &cat(&[
+            &1u32.to_be_bytes(),
+            &track.edit_duration.to_be_bytes(),
+            &track.media_time.to_be_bytes(),
+            &1u16.to_be_bytes(),
+            &0u16.to_be_bytes(),
+        ]),
+    );
+    let mdhd = full_box(
+        b"mdhd",
+        1,
+        0,
+        &cat(&[
+            &[0; 16],
+            &track.timescale.to_be_bytes(),
+            &(n as u64 * u64::from(track.delta)).to_be_bytes(),
+            &0x55C4u16.to_be_bytes(),
+            &[0; 2],
+        ]),
+    );
+    let hdlr = full_box(
+        b"hdlr",
+        0,
+        0,
+        &cat(&[&[0; 4], track.handler, &[0; 12], track.name]),
+    );
+    let dinf = boxed(
+        b"dinf",
+        &full_box(
+            b"dref",
+            0,
+            0,
+            &cat(&[&1u32.to_be_bytes(), &full_box(b"url ", 0, 1, &[])]),
+        ),
+    );
+    let stsd = full_box(b"stsd", 0, 0, &cat(&[&1u32.to_be_bytes(), &track.entry]));
+    let stts = if n == 0 {
+        full_box(b"stts", 0, 0, &0u32.to_be_bytes())
+    } else {
+        full_box(
+            b"stts",
+            0,
+            0,
+            &cat(&[
+                &1u32.to_be_bytes(),
+                &(n as u32).to_be_bytes(),
+                &track.delta.to_be_bytes(),
+            ]),
+        )
+    };
+    // Every chunk is full except perhaps the last.
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for i in 0..track.chunks() {
+        let count = ((i + 1) * track.chunk).min(n) - i * track.chunk;
+        if runs.last().is_none_or(|(_, c)| *c != count) {
+            runs.push((i + 1, count));
+        }
+    }
+    let mut stsc = (runs.len() as u32).to_be_bytes().to_vec();
+    for (first, count) in runs {
+        stsc.extend_from_slice(&(first as u32).to_be_bytes());
+        stsc.extend_from_slice(&(count as u32).to_be_bytes());
+        stsc.extend_from_slice(&1u32.to_be_bytes());
+    }
+    let stsc = full_box(b"stsc", 0, 0, &stsc);
+    let mut sizes = 0u32.to_be_bytes().to_vec();
+    sizes.extend_from_slice(&(n as u32).to_be_bytes());
+    for s in track.samples {
+        sizes.extend_from_slice(&(s.len() as u32).to_be_bytes());
+    }
+    let stsz = full_box(b"stsz", 0, 0, &sizes);
+    let mut table = (offsets.len() as u32).to_be_bytes().to_vec();
+    for offset in offsets {
+        let at = data_offset + offset;
+        if wide {
+            table.extend_from_slice(&at.to_be_bytes());
+        } else {
+            table.extend_from_slice(&(at as u32).to_be_bytes());
+        }
+    }
+    let chunk_offsets = full_box(if wide { b"co64" } else { b"stco" }, 0, 0, &table);
+    let mut stbl = cat(&[&stsd, &stts, &stsc, &stsz, &chunk_offsets]);
+    if let Some(sync) = &track.sync {
+        let mut body = (sync.len() as u32).to_be_bytes().to_vec();
+        for s in sync {
+            body.extend_from_slice(&s.to_be_bytes());
+        }
+        stbl.extend_from_slice(&full_box(b"stss", 0, 0, &body));
+    }
+    let minf = boxed(
+        b"minf",
+        &cat(&[&track.media_header, &dinf, &boxed(b"stbl", &stbl)]),
+    );
+    let mdia = boxed(b"mdia", &cat(&[&mdhd, &hdlr, &minf]));
+    boxed(b"trak", &cat(&[&tkhd, &boxed(b"edts", &elst), &mdia]))
 }
 
 #[cfg(test)]
@@ -801,6 +995,80 @@ mod tests {
             unbaked_core::detect(&file),
             Some(unbaked_core::Container::Mp4)
         );
+    }
+
+    #[test]
+    fn video_files_interleave_and_read_back() {
+        // 25 frames at 10 fps with a key frame every 10, and 2.5 s of 8 kHz sound.
+        let frames: Vec<Vec<u8>> = (0..25u8).map(|i| vec![0, 0, 0, 1, i]).collect();
+        let sync: Vec<bool> = (0..25).map(|i| i % 10 == 0).collect();
+        let packets: Vec<Vec<u8>> = (0..20u8).map(|i| vec![0xA0, i]).collect();
+        let audio = AudioTrack {
+            sample_rate: 8000,
+            channels: 1,
+            config: &[0x15, 0x88],
+            packets: &packets,
+            priming: 1024,
+            length: 20000,
+        };
+        let video = VideoTrack {
+            width: 96,
+            height: 64,
+            timescale: 90000,
+            delta: 9000,
+            sps: &[0x67, 0x42, 0xC0, 0x0A, 0xAB],
+            pps: &[0x68, 0xCE],
+            samples: &frames,
+            sync: &sync,
+            length_ms: 2450,
+        };
+        let file = write_mp4(&video, Some(&audio));
+        assert_eq!(
+            unbaked_core::detect(&file),
+            Some(unbaked_core::Container::Mp4)
+        );
+        let movie = read(&file, 100).unwrap();
+        assert_eq!(movie.timescale, 1000);
+        let [v, a] = &movie.tracks[..] else {
+            panic!("two tracks")
+        };
+        assert_eq!((&v.handler, v.timescale, v.rotation), (b"vide", 90000, 0));
+        assert_eq!(
+            v.edits,
+            Some(vec![Edit {
+                duration: 2450,
+                media_time: 0
+            }])
+        );
+        assert_eq!(
+            a.edits,
+            Some(vec![Edit {
+                duration: 2450,
+                media_time: 1024
+            }])
+        );
+        for (i, s) in v.samples.iter().enumerate() {
+            assert_eq!(v.sample_data(&file, s).unwrap(), &frames[i][..]);
+            assert_eq!(
+                (s.decode_time, s.composition_offset, s.sync),
+                (i as u64 * 9000, 0, i % 10 == 0)
+            );
+        }
+        for (i, s) in a.samples.iter().enumerate() {
+            assert_eq!(a.sample_data(&file, s).unwrap(), &packets[i][..]);
+        }
+        let children = v.entry_children(78).unwrap();
+        assert_eq!(
+            child(&children, b"avcC").unwrap(),
+            [
+                1, 0x42, 0xC0, 0x0A, 0xFF, 0xE1, 0, 5, 0x67, 0x42, 0xC0, 0x0A, 0xAB, 1, 0, 2, 0x68,
+                0xCE
+            ]
+        );
+        // Chunks alternate: the first second of video, then of sound.
+        let first_audio = a.samples[0].offset;
+        assert_eq!(first_audio, v.samples[9].offset + 5);
+        assert_eq!(v.samples[10].offset, a.samples[6].offset + 2);
     }
 
     #[test]

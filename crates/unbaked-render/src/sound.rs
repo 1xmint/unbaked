@@ -466,8 +466,14 @@ fn add_clip(channels: &mut [Vec<f32>], clip: &AudioClip, source: &Pcm) {
     }
 }
 
-/// Encodes sound as AAC-LC in an M4A file.
-pub fn encode_m4a(pcm: &Pcm) -> Result<Vec<u8>, String> {
+/// Sound encoded as AAC-LC: the `AudioSpecificConfig` and the access units.
+pub struct Aac {
+    pub config: Vec<u8>,
+    pub packets: Vec<Vec<u8>>,
+}
+
+/// Encodes sound as AAC-LC.
+pub fn encode_aac(pcm: &Pcm) -> Result<Aac, String> {
     let channel_count = pcm.channels.len() as u16;
     let bitrate = if channel_count == 1 { 96_000 } else { 160_000 };
     let mut encoder = AacEncoder::new(AacEncoderConfig {
@@ -483,15 +489,28 @@ pub fn encode_m4a(pcm: &Pcm) -> Result<Vec<u8>, String> {
     while let Ok(packet) = encoder.next_packet() {
         packets.push(packet.data);
     }
-    let config = audio_specific_config_bytes(pcm.rate, channel_count);
-    Ok(mp4::write_m4a(&mp4::AudioTrack {
+    Ok(Aac {
+        config: audio_specific_config_bytes(pcm.rate, channel_count),
+        packets,
+    })
+}
+
+/// The track description for encoded sound.
+pub fn aac_track<'a>(pcm: &Pcm, aac: &'a Aac) -> mp4::AudioTrack<'a> {
+    mp4::AudioTrack {
         sample_rate: pcm.rate,
-        channels: channel_count,
-        config: &config,
-        packets: &packets,
+        channels: pcm.channels.len() as u16,
+        config: &aac.config,
+        packets: &aac.packets,
         priming: AAC_PRIMING,
         length: pcm.len() as u64,
-    }))
+    }
+}
+
+/// Encodes sound as AAC-LC in an M4A file.
+pub fn encode_m4a(pcm: &Pcm) -> Result<Vec<u8>, String> {
+    let aac = encode_aac(pcm)?;
+    Ok(mp4::write_m4a(&aac_track(pcm, &aac)))
 }
 
 #[cfg(test)]

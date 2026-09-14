@@ -30,15 +30,19 @@ pub struct RenderLimits {
     /// Most samples per channel in any one sound buffer: a decoded source or
     /// the mix.
     pub max_samples: u64,
+    /// Most frames in a video. The encoded video is held in memory.
+    pub max_frames: u64,
 }
 
 impl Default for RenderLimits {
     /// 64 million pixels, about 1 GiB per floating-point buffer, and 256
-    /// million samples, 88 minutes of stereo at 48 kHz in about 2 GiB.
+    /// million samples, 88 minutes of stereo at 48 kHz in about 2 GiB. 54,000
+    /// frames, 30 minutes at 30 fps.
     fn default() -> Self {
         RenderLimits {
             max_pixels: 64_000_000,
             max_samples: 256_000_000,
+            max_frames: 54_000,
         }
     }
 }
@@ -68,37 +72,71 @@ pub fn render_still<'a>(
     fonts: &'a dyn FontSource,
     limits: RenderLimits,
 ) -> Result<Pixmap, RenderError> {
-    let output = &recipe.output;
-    let (Some(width), Some(height)) = (output.width, output.height) else {
-        return Err(RenderError::Unsupported(
-            "only image output is rendered yet".into(),
-        ));
-    };
-    let background = output
-        .background
-        .map_or([0.0; 4], |c| premultiply(straight(c)));
-    let mut canvas = Pixmap::filled(width, height, background, limits.max_pixels)
+    Frames::new(recipe, file, fonts, limits)?.draw(Moment::AtMs(recipe.output.at_ms))
+}
+
+/// Draws a recipe's layers at any moment. Decoded images, fonts and video
+/// decoders are kept between frames.
+pub struct Frames<'a> {
+    scene: Scene<'a>,
+    background: [f32; 4],
+}
+
+impl<'a> Frames<'a> {
+    /// Prepares to draw `recipe`, which must have a canvas size.
+    pub fn new(
+        recipe: &'a Recipe,
+        file: &'a dyn Fn(&str) -> Option<&'a [u8]>,
+        fonts: &'a dyn FontSource,
+        limits: RenderLimits,
+    ) -> Result<Frames<'a>, RenderError> {
+        let output = &recipe.output;
+        let (Some(width), Some(height)) = (output.width, output.height) else {
+            return Err(RenderError::Unsupported(
+                "the recipe has no canvas size".into(),
+            ));
+        };
+        let background = output
+            .background
+            .map_or([0.0; 4], |c| premultiply(straight(c)));
+        Ok(Frames {
+            scene: Scene {
+                recipe,
+                file,
+                limits,
+                fonts,
+                decoded: HashMap::new(),
+                font_files: HashMap::new(),
+                videos: HashMap::new(),
+                moment: Moment::AtMs(output.at_ms),
+                width,
+                height,
+            },
+            background,
+        })
+    }
+
+    /// The canvas at `moment`, premultiplied.
+    pub fn draw(&mut self, moment: Moment) -> Result<Pixmap, RenderError> {
+        let scene = &mut self.scene;
+        let mut canvas = Pixmap::filled(
+            scene.width,
+            scene.height,
+            self.background,
+            scene.limits.max_pixels,
+        )
         .map_err(too_large("the canvas"))?;
-    let mut scene = Scene {
-        recipe,
-        file,
-        limits,
-        fonts,
-        decoded: HashMap::new(),
-        font_files: HashMap::new(),
-        videos: HashMap::new(),
-        moment: Moment::AtMs(output.at_ms),
-        width,
-        height,
-    };
-    scene.layers(
-        &mut canvas,
-        &recipe.layers,
-        "/layers",
-        Span::scene(output.duration_ms),
-        Affine::IDENTITY,
-    )?;
-    Ok(canvas)
+        scene.moment = moment;
+        let recipe = scene.recipe;
+        scene.layers(
+            &mut canvas,
+            &recipe.layers,
+            "/layers",
+            Span::scene(recipe.output.duration_ms),
+            Affine::IDENTITY,
+        )?;
+        Ok(canvas)
+    }
 }
 
 /// A layer's source image and how it maps to the layer box: pixel `(x, y)`

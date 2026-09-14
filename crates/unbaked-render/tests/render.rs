@@ -215,28 +215,110 @@ fn video_layers_show_the_frame_at_their_source_time() {
 }
 
 #[test]
-fn video_output_is_refused_clearly() {
-    let recipe = video_recipe(
-        r#"{"kind": "video", "width": 96, "height": 64, "fps": "10/1", "duration_ms": 1000}"#,
-        "",
-    );
-    let files: pack::Files = [
-        ("recipe.json", recipe.into_bytes()),
+fn video_recipes_render_a_fresh_mp4() {
+    use unbaked_render::mp4;
+    use unbaked_render::sound::decode;
+    use unbaked_render::video::Video;
+    // One second at 10 fps: red, then the test clip from 700 ms in over the
+    // right half from 500 ms, and a beep in the second half.
+    let recipe = r##"{"unbaked": 0,
+        "output": {"kind": "video", "width": 96, "height": 64, "fps": "10", "duration_ms": 1000,
+                   "background": "#cc2020ff"},
+        "assets": {"clip": {"path": "assets/clip.mp4"}, "beep": {"path": "assets/beep.wav"}},
+        "layers": [{"id": "v", "type": "video", "asset": "clip", "start_ms": 500,
+                    "trim_start_ms": 700, "transform": {"x": 48}}],
+        "audio": [{"id": "b", "asset": "beep", "start_ms": 500}]}"##;
+    let beep: Vec<i16> = tone(1000.0, 48000, 24000, 0.5)
+        .iter()
+        .map(|s| (s * 32767.0) as i16)
+        .collect();
+    let mut files: pack::Files = [
+        ("recipe.json", recipe.as_bytes().to_vec()),
         ("assets/clip.mp4", CLIP.to_vec()),
+        ("assets/beep.wav", wav(48000, 1, &beep)),
     ]
     .into_iter()
     .map(|(n, d)| (n.to_owned(), d))
     .collect();
+
+    let file = render(&files, &NoFonts, RenderLimits::default()).unwrap();
+    assert_eq!(
+        file,
+        render(&files, &NoFonts, RenderLimits::default()).unwrap(),
+        "renders repeat exactly"
+    );
+    assert_eq!(
+        open(&file, Limits::default()).unwrap().check(),
+        Status::Fresh
+    );
+
+    let movie = mp4::read(&file, 10_000).unwrap();
+    let handlers: Vec<&[u8; 4]> = movie.tracks.iter().map(|t| &t.handler).collect();
+    assert_eq!(handlers, [b"vide", b"soun"]);
+    assert_eq!(movie.tracks[0].samples.len(), 10);
+
+    let mut video = Video::open(&file, 10_000, 1_000_000).unwrap();
+    let red = [0.8, 0.125, 0.125];
+    let close = |got: [f32; 4], want: [f32; 3]| {
+        got[..3].iter().zip(want).all(|(g, w)| (g - w).abs() < 0.04)
+    };
+    for at in [50, 450, 950] {
+        let frame = video.frame_at(at, 1).unwrap();
+        assert!(close(frame.pixel(20, 30), red), "{at} ms");
+    }
+    let before = video.frame_at(450, 1).unwrap();
+    assert!(close(before.pixel(60, 8), red), "the clip has not started");
+    // At 550 ms the clip is 50 ms in, plus the 700 ms trim: its frame 5.
+    let during = video.frame_at(550, 1).unwrap();
+    let luma = f64::from(during.pixel(52, 8)[1]) * 219.0 + 16.0;
+    assert_eq!(
+        ((luma - 24.0) / 16.0).round(),
+        5.0,
+        "{:?}",
+        during.pixel(52, 8)
+    );
+
+    let sound = decode(&file, 1_000_000).unwrap();
+    assert_eq!((sound.rate, sound.len()), (48000, 48000));
+    assert!(rms(&sound.channels[0][4_800..19_200]) < 0.01);
+    assert!(rms(&sound.channels[0][28_800..43_200]) > 0.3);
+
+    // Without audio clips there is no sound track.
+    let silent = recipe.replace(
+        r#""audio": [{"id": "b", "asset": "beep", "start_ms": 500}]"#,
+        r#""audio": []"#,
+    );
+    files.insert("recipe.json".into(), silent.into_bytes());
+    let file = render(&files, &NoFonts, RenderLimits::default()).unwrap();
+    assert_eq!(mp4::read(&file, 10_000).unwrap().tracks.len(), 1);
+
+    let err = render(
+        &files,
+        &NoFonts,
+        RenderLimits {
+            max_frames: 9,
+            ..RenderLimits::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "the video has 10 frames, more than the limit of 9"
+    );
+    let huge = String::from_utf8(files["recipe.json"].clone())
+        .unwrap()
+        .replace(r#""width": 96"#, r#""width": 4000"#);
+    files.insert("recipe.json".into(), huge.into_bytes());
     assert_eq!(
         render(&files, &NoFonts, RenderLimits::default()).unwrap_err(),
-        RenderError::Unsupported("video output is not rendered yet".into())
+        RenderError::Unsupported("video larger than 3840×2160 is not rendered yet".into())
     );
-    // The same clip in a still renders to a fresh file.
+
+    // The same clip in a still renders to a fresh PNG.
     let still_recipe = video_recipe(
         r#"{"kind": "image", "width": 96, "height": 64, "at_ms": 450}"#,
         "",
     );
-    let mut files = files;
     files.insert("recipe.json".into(), still_recipe.into_bytes());
     let file = render(&files, &NoFonts, RenderLimits::default()).unwrap();
     assert_eq!(
