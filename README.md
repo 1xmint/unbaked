@@ -23,7 +23,7 @@ Early. The format rules are drafted in [SPEC.md](SPEC.md). Why it exists and
 where it is going: [VISION.md](VISION.md).
 
 Files can be checked, unpacked, repacked and rendered. All three outputs
-render: still images, sound and video. Layers can be solid, image, video, text
+render: still images, sound and video. Pictures can be PNG, JPEG or WebP. Layers can be solid, image, video, text
 or group, with masks, blur, shadow and adjust effects, transforms, opacity,
 blend modes, keyframes and transitions. Text is shaped with kerning, ligatures
 and right-to-left runs, and wraps inside its box. Sound clips from WAV, MP3,
@@ -41,6 +41,17 @@ cargo run -p unbaked-cli -- unpack poster.unbaked.png edit/
 cargo run -p unbaked-cli -- pack edit/ --into poster.unbaked.png
 cargo run -p unbaked-cli -- render poster.unbaked.png
 ```
+
+AI agents edit files with JSON Patch (`unbaked edit`), bring in pictures and
+sounds (`unbaked add`), look before rendering (`unbaked preview`,
+`unbaked listen`) and size a job first (`unbaked estimate`). Every command
+answers in one JSON shape with `--json`, and renders stop at `--time-limit-ms`.
+The loop, the error shapes and worked patches are in
+[docs/agents.md](docs/agents.md).
+
+Without the default `video` feature
+(`cargo build -p unbaked-cli --no-default-features`), images and sound build
+with no OpenH264 (C) code at all, and anything video fails with a clear error.
 
 Recipes can be validated with the JSON Schema in
 [schema/recipe.schema.json](schema/recipe.schema.json). It catches most mistakes
