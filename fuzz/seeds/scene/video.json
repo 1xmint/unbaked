@@ -1,0 +1,17 @@
+{
+  "unbaked": 0,
+  "output": { "kind": "video", "width": 32, "height": 18, "fps": "30000/1001", "duration_ms": 500 },
+  "assets": {
+    "clip": { "path": "assets/clip.mp4" },
+    "sound": { "path": "assets/sound.m4a" }
+  },
+  "layers": [
+    { "id": "clip", "type": "video", "asset": "clip", "width": 32,
+      "transform": { "scale_x": { "keys": [ { "t_ms": 0, "v": 1, "ease": [0.25, 0.1, 0.25, 1] }, { "t_ms": 500, "v": 1.5 } ] } },
+      "out": { "type": "fade", "duration_ms": 200 } }
+  ],
+  "audio": [
+    { "id": "music", "asset": "sound", "gain_db": { "keys": [ { "t_ms": 0, "v": -6 }, { "t_ms": 20, "v": -6, "ease": "hold" }, { "t_ms": 21, "v": -20 } ] },
+      "fade_in_ms": 10 }
+  ]
+}

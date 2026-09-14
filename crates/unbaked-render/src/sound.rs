@@ -49,6 +49,7 @@ pub fn decode(bytes: &[u8], max_samples: u64) -> Result<Pcm, String> {
     let pcm = match sniff::detect(head) {
         Some(AssetKind::Mp4) => decode_mp4(bytes, max_samples)?,
         Some(AssetKind::Mp3 | AssetKind::Wav | AssetKind::Flac) => {
+            check_wav_channels(bytes)?;
             decode_other(bytes, max_samples)?
         }
         _ => return Err("not an audio file".into()),
@@ -57,6 +58,43 @@ pub fn decode(bytes: &[u8], max_samples: u64) -> Result<Pcm, String> {
         return Err("the sound has no sample rate or no channels".into());
     }
     Ok(pcm)
+}
+
+/// Rejects WAV data declaring more than 2 channels before symphonia reads it:
+/// symphonia-format-riff 0.6.1 overflows a `u16` on huge channel counts, which
+/// panics wherever overflow checks are on. Every `RIFF….WAVE` header in the
+/// file is checked, since symphonia's probe may find one after other data.
+fn check_wav_channels(bytes: &[u8]) -> Result<(), String> {
+    let u32_at = |i: usize| {
+        bytes
+            .get(i..i + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+    };
+    let starts = bytes
+        .windows(12)
+        .enumerate()
+        .filter(|(_, w)| w.starts_with(b"RIFF") && w.ends_with(b"WAVE"));
+    for (start, _) in starts {
+        let mut pos = start + 12;
+        while let (Some(kind), Some(len)) = (bytes.get(pos..pos + 4), u32_at(pos + 4)) {
+            if kind == b"fmt " {
+                if let Some(b) = bytes.get(pos + 10..pos + 12) {
+                    let n = u16::from_le_bytes([b[0], b[1]]);
+                    if n > 2 {
+                        return Err(format!(
+                            "{n} channels: sources with more than 2 channels are not supported"
+                        ));
+                    }
+                }
+                break;
+            }
+            pos = pos
+                .saturating_add(8)
+                .saturating_add(len)
+                .saturating_add(len % 2);
+        }
+    }
+    Ok(())
 }
 
 fn too_long(n: usize, max: u64) -> Result<(), String> {
@@ -702,5 +740,14 @@ mod tests {
         assert_eq!(pcm.channels[0], [0.0, 0.5, -0.5, 32767.0 / 32768.0]);
         assert!(decode(&wav, 2).is_err());
         assert!(decode(b"not sound at all", 100).is_err());
+
+        // Found by fuzzing: a huge channel count panicked inside symphonia.
+        let mut wide = wav.clone();
+        wide[22..24].copy_from_slice(&40_000u16.to_le_bytes());
+        let error = decode(&wide, 100).unwrap_err();
+        assert!(error.contains("40000 channels"), "{error}");
+        let mut tagged = b"ID3\x04\0\0\0\0\0\0".to_vec();
+        tagged.extend_from_slice(&wide);
+        assert!(decode(&tagged, 100).is_err());
     }
 }

@@ -1,0 +1,67 @@
+[package]
+name = "unbaked-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+unbaked-core = { path = "../crates/unbaked-core" }
+unbaked-render = { path = "../crates/unbaked-render" }
+
+# Its own workspace, so `cargo test --workspace` never builds libFuzzer.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "carrier"
+path = "fuzz_targets/carrier.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "package"
+path = "fuzz_targets/package.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recipe"
+path = "fuzz_targets/recipe.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bake"
+path = "fuzz_targets/bake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "open"
+path = "fuzz_targets/open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "media"
+path = "fuzz_targets/media.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scene"
+path = "fuzz_targets/scene.rs"
+test = false
+doc = false
+bench = false

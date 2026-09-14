@@ -1,0 +1,91 @@
+name: Fuzz
+
+# Fuzzing runs here only, never on a developer's machine.
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds to fuzz each target
+        default: "600"
+  pull_request:
+    paths:
+      - fuzz/**
+      - .github/workflows/fuzz.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: carrier
+            seeds: fuzz/seeds/files tests/video
+          - target: package
+            seeds: fuzz/seeds/package
+          - target: recipe
+            seeds: fuzz/seeds/scene tests/schema/valid tests/schema/invalid tests/recipe/invalid
+          - target: bake
+            seeds: fuzz/seeds/bake
+          - target: open
+            seeds: fuzz/seeds/files
+          - target: media
+            seeds: fuzz/seeds/files tests/video
+          - target: scene
+            seeds: fuzz/seeds/scene tests/schema/valid
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz
+          key: ${{ matrix.target }}
+      - run: cargo install cargo-fuzz --version 0.13.2 --locked
+      # Start from the workspace's pinned versions; only libFuzzer is added.
+      - run: cp Cargo.lock fuzz/Cargo.lock
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Fuzz
+        env:
+          TARGET: ${{ matrix.target }}
+          SEEDS: ${{ matrix.seeds }}
+          SECONDS_EACH: ${{ github.event_name == 'pull_request' && '60' || inputs.seconds || '600' }}
+        run: |
+          mkdir -p "fuzz/corpus/$TARGET"
+          seeds=()
+          for dir in $SEEDS; do seeds+=("$PWD/$dir"); done
+          cd fuzz
+          cargo fuzz build "$TARGET"
+          cargo fuzz run "$TARGET" "corpus/$TARGET" "${seeds[@]}" -- \
+            -max_total_time="$SECONDS_EACH" -timeout=30 -rss_limit_mb=2560
+      - if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
