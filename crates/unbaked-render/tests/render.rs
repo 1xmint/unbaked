@@ -980,14 +980,14 @@ fn estimates_read_sizes_from_the_recipe_and_headers() {
 
     let clip = estimate(&conformance_package("video-clip")).unwrap();
     assert_eq!(clip.frames, 21, "700 ms at 30000/1001 fps");
-    assert!(clip.video_pixels_per_frame > 0 && clip.video_pixels_per_frame % 2 == 0);
+    assert!(clip.video_pixels_per_frame > 0 && clip.video_pixels_per_frame.is_multiple_of(2));
 
     let mix = estimate(&conformance_package("audio-mix")).unwrap();
     assert_eq!((mix.canvas_pixels, mix.frames), (0, 0));
     assert_eq!(mix.output_samples, 300 * 48 * 2);
     // The mono tone, the stereo chord (each counted once) and the voice in whole AAC frames.
     let voice = mix.source_samples - 11_025 - 9_600 * 2;
-    assert!(voice > 0 && voice % 1024 == 0, "{}", mix.source_samples);
+    assert!(voice > 0 && voice.is_multiple_of(1024), "{}", mix.source_samples);
     assert!(mix.asset_bytes > 0);
 
     // A blur that would run for hours costs far more than the whole effects case.
