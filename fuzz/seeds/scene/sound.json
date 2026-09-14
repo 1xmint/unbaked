@@ -1,0 +1,9 @@
+{
+  "unbaked": 0,
+  "output": { "kind": "audio", "duration_ms": 80, "sample_rate": 48000, "channels": 2 },
+  "assets": { "sound": { "path": "assets/sound.m4a" }, "clip": { "path": "assets/clip.mp4" } },
+  "audio": [
+    { "id": "a", "asset": "sound", "start_ms": 10, "trim_start_ms": 5, "fade_out_ms": 20 },
+    { "id": "b", "asset": "sound", "gain_db": -3, "duration_ms": 30, "muted": false }
+  ]
+}

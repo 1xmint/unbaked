@@ -1,0 +1,25 @@
+{
+  "unbaked": 0,
+  "output": { "kind": "image", "width": 48, "height": 32, "background": "#204060ff", "at_ms": 250 },
+  "assets": {
+    "picture": { "path": "assets/image.png" },
+    "clip": { "path": "assets/clip.mp4" },
+    "lato": { "path": "assets/fonts/Lato-Regular.ttf", "license": { "spdx": "OFL-1.1", "file": "assets/fonts/OFL.txt" } }
+  },
+  "layers": [
+    { "id": "video", "type": "video", "asset": "clip", "width": 24, "trim_start_ms": 300 },
+    { "id": "group", "type": "group", "opacity": 0.8, "effects": [ { "type": "blur", "sigma": 0.7 } ],
+      "layers": [
+        { "id": "picture", "type": "image", "asset": "picture", "width": 20, "blend": "multiply",
+          "transform": { "x": 24, "y": 16, "anchor_x": 0.5, "anchor_y": 0.5, "rotation_deg": 30 } },
+        { "id": "square", "type": "solid", "color": "#ff800080", "width": 10.5, "height": 7,
+          "start_ms": 100, "end_ms": 900, "in": { "type": "zoom", "duration_ms": 300, "ease": "ease-out" },
+          "effects": [ { "type": "shadow", "dx": 2, "dy": 1, "sigma": 1 }, { "type": "adjust", "saturation": 0.5 } ] }
+      ] },
+    { "id": "words", "type": "text", "text": "Hi there", "font": "lato", "size_px": 9, "color": "#ffffffff",
+      "box_width": 30, "align": "center", "transform": { "x": 8, "y": 12 },
+      "mask": { "mode": "luminance", "invert": true, "layers": [
+        { "id": "mask", "type": "solid", "color": "#ffffffff", "width": 12, "height": 32 }
+      ] } }
+  ]
+}
