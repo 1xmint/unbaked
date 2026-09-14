@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use serde_json::{Value as Json, json};
 use unbaked_core::bake::Change;
+use unbaked_core::edit::{self, EditError};
 use unbaked_core::json::Problem;
 use unbaked_core::package::Limits;
 use unbaked_core::{Status, open, pack};
@@ -17,7 +18,7 @@ use unbaked_render::{Deadline, RenderError, RenderLimits};
 mod fonts;
 
 const HELP: &str = "\
-unbaked: check, read, unpack, pack and render Unbaked media files
+unbaked: check, read, edit, unpack, pack and render Unbaked media files
 
 Usage:
   unbaked check <file> [--json]         Is the render fresh, stale, render-modified or invalid?
@@ -27,6 +28,16 @@ Usage:
                                         Put a folder's package into a file, replacing its
                                         package. Writes <file> in place unless -o is given.
                                         Keeps the file's bake.json if the folder has none.
+  unbaked edit <file-or-dir> --patch <file|-> [-o <out>] [--json]
+                                        Apply a JSON Patch (RFC 6902) to recipe.json. Nothing
+                                        changes unless every operation applies and the result
+                                        is valid. The render is left stale.
+  unbaked add <file-or-dir> <media> --id <id> [--license <json-file>] [-o <out>] [--json]
+                                        Pack an image, video, sound or font as assets/<id>.<ext>
+                                        and point asset <id> at it, replacing its old file.
+                                        A packed font needs --license ({\"spdx\": ...}).
+                                        edit and add change a file or folder in place unless
+                                        -o is given; -o for a folder names a new folder.
   unbaked render <file-or-dir> [-o <out>] [--fonts <dir>] [limits] [--json]
                                         Render the recipe and write a fresh Unbaked file.
                                         Renders a file in place unless -o is given; a
@@ -186,19 +197,29 @@ fn run() -> Result<u8, Fail> {
     let mut into: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
     let mut font_dir: Option<PathBuf> = None;
+    let mut patch: Option<PathBuf> = None;
+    let mut id: Option<String> = None;
+    let mut license: Option<PathBuf> = None;
     let mut limits = RenderLimits::default();
     let mut time_limit_ms: Option<u64> = None;
     let limited = command == "render";
     while let Some(arg) = args.next()? {
         match arg {
             Value(v) => positional.push(v),
-            Long("json") if command == "check" || command == "render" => json_output = true,
+            Long("json") if matches!(command.as_str(), "check" | "render" | "edit" | "add") => {
+                json_output = true
+            }
+            Long("patch") if command == "edit" => patch = Some(args.value()?.into()),
+            Long("id") if command == "add" => id = Some(args.value()?.string()?),
+            Long("license") if command == "add" => license = Some(args.value()?.into()),
             Long("time-limit-ms") if limited => time_limit_ms = Some(args.value()?.parse()?),
             Long("max-pixels") if limited => limits.max_pixels = args.value()?.parse()?,
             Long("max-samples") if limited => limits.max_samples = args.value()?.parse()?,
             Long("max-frames") if limited => limits.max_frames = args.value()?.parse()?,
             Long("into") if command == "pack" => into = Some(args.value()?.into()),
-            Short('o') | Long("output") if command == "pack" || command == "render" => {
+            Short('o') | Long("output")
+                if matches!(command.as_str(), "pack" | "render" | "edit" | "add") =>
+            {
                 out = Some(args.value()?.into())
             }
             Long("fonts") if command == "render" => font_dir = Some(args.value()?.into()),
@@ -232,6 +253,36 @@ fn run() -> Result<u8, Fail> {
             let paths = wanted(1)?;
             let into = into.ok_or_else(|| Fail::Usage("pack needs --into <file>".into()))?;
             pack_into(&paths[0], &into, out.as_deref().unwrap_or(&into))
+        }
+        "edit" => {
+            let patch = patch.ok_or_else(|| Fail::Usage("edit needs --patch <file|->".into()))?;
+            let input = &wanted(1)?[0];
+            let files = load(input)?;
+            let patch = if patch.as_os_str() == "-" {
+                let mut bytes = Vec::new();
+                io::Read::read_to_end(&mut io::stdin(), &mut bytes)
+                    .map_err(|e| Fail::Io(format!("stdin: {e}")))?;
+                bytes
+            } else {
+                read(&patch)?
+            };
+            let changed = edit::edit(&files, &patch).map_err(edit_fail)?;
+            save(input, &files, &changed, out.as_deref(), json_output)
+        }
+        "add" => {
+            let id = id.ok_or_else(|| Fail::Usage("add needs --id <id>".into()))?;
+            let paths = wanted(2)?;
+            let files = load(&paths[0])?;
+            let license = match license {
+                Some(path) => Some(
+                    unbaked_core::json::parse(&read(&path)?)
+                        .map_err(|p| Fail::Usage(format!("{}: {}", path.display(), p.message)))?,
+                ),
+                None => None,
+            };
+            let media = read(&paths[1])?;
+            let changed = edit::add_asset(&files, &id, &media, license).map_err(edit_fail)?;
+            save(&paths[0], &files, &changed, out.as_deref(), json_output)
         }
         "render" => {
             // The clock starts once the arguments are read.
@@ -287,6 +338,85 @@ fn render(
         }));
     } else {
         eprintln!("rendered {}", out.display());
+    }
+    Ok(0)
+}
+
+fn edit_fail(e: EditError) -> Fail {
+    match e {
+        EditError::Patch(problems) => Fail::Invalid(
+            "the patch cannot be applied".into(),
+            problems_json("patch", &problems).collect(),
+        ),
+        EditError::Recipe(problems) => Fail::Invalid(
+            "the edited recipe.json is invalid".into(),
+            problems_json("recipe.json", &problems).collect(),
+        ),
+        EditError::Asset(message) => Fail::Render("unsupported", message),
+    }
+}
+
+/// The package of an Unbaked file, or of a folder in the directory form.
+fn load(input: &Path) -> Result<pack::Files, Fail> {
+    if input.is_dir() {
+        pack::read_folder(input, Limits::default()).map_err(|e| match e {
+            pack::FolderError::Io { .. } => Fail::Io(e.to_string()),
+            other => Fail::Format(format!("{}: {other}", input.display())),
+        })
+    } else {
+        opened_files(input)
+    }
+}
+
+/// Writes changed package files back: into the file's package, or into the
+/// folder file by file. With `out`, a file goes to `out` and a folder to the
+/// new folder `out`.
+fn save(
+    input: &Path,
+    before: &pack::Files,
+    after: &pack::Files,
+    out: Option<&Path>,
+    json_output: bool,
+) -> Result<u8, Fail> {
+    let target = out.unwrap_or(input);
+    if input.is_dir() {
+        if let Some(out) = out {
+            pack::write_folder(after, out).map_err(|e| match e {
+                pack::FolderError::Io { .. } | pack::FolderError::NotEmpty(_) => {
+                    Fail::Io(e.to_string())
+                }
+                other => Fail::Format(other.to_string()),
+            })?;
+        } else {
+            for (name, data) in after {
+                if before.get(name) != Some(data) {
+                    let path = input.join(name);
+                    if let Some(parent) = path.parent() {
+                        fs::create_dir_all(parent)
+                            .map_err(|e| Fail::Io(format!("{}: {e}", parent.display())))?;
+                    }
+                    write_replacing(&path, data)?;
+                }
+            }
+            for name in before.keys().filter(|name| !after.contains_key(*name)) {
+                let path = input.join(name);
+                fs::remove_file(&path).map_err(|e| Fail::Io(format!("{}: {e}", path.display())))?;
+            }
+        }
+    } else {
+        let package = pack::write(after, Limits::default())
+            .map_err(|e| Fail::Format(format!("{}: {e}", input.display())))?;
+        let result = pack::with_package(&read(input)?, &package)
+            .map_err(|e| Fail::Format(format!("{}: {e}", input.display())))?;
+        write_replacing(target, &result)?;
+    }
+    if json_output {
+        print_json(&json!({ "ok": true, "output": target.display().to_string() }));
+    } else {
+        eprintln!(
+            "updated {}; render it to refresh the visible media",
+            target.display()
+        );
     }
     Ok(0)
 }
