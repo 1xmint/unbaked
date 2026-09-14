@@ -159,21 +159,208 @@ fn image_layers_scale_by_aspect_ratio_and_fade_at_their_edges() {
 
 #[test]
 fn unsupported_features_are_refused_clearly() {
-    let recipe = image_recipe(1, 1, "", r#"{"id": "g", "type": "group", "layers": []}"#);
+    let text = r#"{"id": "t", "type": "text", "text": "hi", "font": "f", "size_px": 10}"#;
+    let recipe = image_recipe(1, 1, "", text);
     assert_eq!(
         still(&recipe, &[]).unwrap_err(),
-        RenderError::Unsupported("/layers/0: groups are not rendered yet".into())
+        RenderError::Unsupported("/layers/0: text layers are not rendered yet".into())
+    );
+    let nested = image_recipe(
+        1,
+        1,
+        "",
+        &format!(r#"{{"id": "g", "type": "group", "layers": [{text}]}}"#),
+    );
+    assert_eq!(
+        still(&nested, &[]).unwrap_err(),
+        RenderError::Unsupported("/layers/0/layers/0: text layers are not rendered yet".into())
     );
     let hidden = image_recipe(
         1,
         1,
         "",
-        r#"{"id": "g", "type": "group", "layers": [], "hidden": true}"#,
+        &text.replace("\"size_px\"", "\"hidden\": true, \"size_px\""),
     );
     assert!(
         still(&hidden, &[]).is_ok(),
         "hidden layers are skipped, not refused"
     );
+}
+
+/// A 1-high solid: `{"id": .., "type": "solid", ..}` with extra fields.
+fn solid(id: &str, color: &str, width: u32, extra: &str) -> String {
+    format!(
+        r#"{{"id": "{id}", "type": "solid", "color": "{color}", "width": {width}, "height": 1{extra}}}"#
+    )
+}
+
+#[test]
+fn groups_are_isolated_and_move_their_children() {
+    // Two overlapping opaque children at half group opacity: the overlap is 50%, not 75%.
+    let layers = format!(
+        r#"{{"id": "g", "type": "group", "opacity": 0.5, "transform": {{"x": 1}}, "layers": [{}, {}]}}"#,
+        solid("a", "#ff0000ff", 2, ""),
+        solid("b", "#0000ffff", 2, r#", "transform": {"x": 1}"#),
+    );
+    let out = still(&image_recipe(4, 1, "", &layers), &[]).unwrap();
+    assert_eq!(at(&out, 0, 0), CLEAR);
+    assert_eq!(at(&out, 1, 0), [255, 0, 0, 128]);
+    assert_eq!(
+        at(&out, 2, 0),
+        [0, 0, 255, 128],
+        "blue covers red inside the group"
+    );
+    assert_eq!(at(&out, 3, 0), [0, 0, 255, 128]);
+
+    // A multiply child blends only with its group, not with the background below it.
+    let layers = format!(
+        r#"{{"id": "g", "type": "group", "layers": [{}]}}"#,
+        solid("m", "#ff0000ff", 1, r#", "blend": "multiply""#),
+    );
+    let out = still(
+        &image_recipe(1, 1, r##", "background": "#808080ff""##, &layers),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(at(&out, 0, 0), [255, 0, 0, 255]);
+
+    // Children's times are measured from the group's start.
+    let layers = format!(
+        r#"{{"id": "g", "type": "group", "start_ms": 500, "layers": [{}]}}"#,
+        solid("late", "#ffffffff", 1, r#", "start_ms": 600"#),
+    );
+    let before = still(&image_recipe(1, 1, r#", "at_ms": 1000"#, &layers), &[]).unwrap();
+    assert_eq!(at(&before, 0, 0), CLEAR);
+    let after = still(&image_recipe(1, 1, r#", "at_ms": 1100"#, &layers), &[]).unwrap();
+    assert_eq!(at(&after, 0, 0), [255, 255, 255, 255]);
+}
+
+#[test]
+fn masks_limit_where_a_layer_shows() {
+    let masked = |mask: &str, transform: &str| {
+        image_recipe(
+            4,
+            1,
+            "",
+            &solid(
+                "w",
+                "#ffffffff",
+                4,
+                &format!(r#"{transform}, "mask": {mask}"#),
+            ),
+        )
+    };
+    let spot = solid("m", "#ffffffff", 2, "");
+
+    let out = still(&masked(&format!(r#"{{"layers": [{spot}]}}"#), ""), &[]).unwrap();
+    let row = |out: &Pixmap| (0..4).map(|x| at(out, x, 0)[3]).collect::<Vec<_>>();
+    assert_eq!(row(&out), [255, 255, 0, 0]);
+
+    let out = still(
+        &masked(&format!(r#"{{"layers": [{spot}], "invert": true}}"#), ""),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(row(&out), [0, 0, 255, 255]);
+
+    // Luminance of a half-transparent white mask is 0.5; of black, 0.
+    let grey = solid("m", "#ffffff80", 4, "");
+    let out = still(
+        &masked(
+            &format!(r#"{{"layers": [{grey}], "mode": "luminance"}}"#),
+            "",
+        ),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(row(&out), [128, 128, 128, 128]);
+    let black = solid("m", "#000000ff", 4, "");
+    let out = still(
+        &masked(
+            &format!(r#"{{"layers": [{black}], "mode": "luminance"}}"#),
+            "",
+        ),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(row(&out), [0, 0, 0, 0]);
+
+    // The mask ignores the masked layer's own transform: moving the layer does not move the mask.
+    let out = still(
+        &masked(
+            &format!(r#"{{"layers": [{spot}]}}"#),
+            r#", "transform": {"x": 1}"#,
+        ),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(row(&out), [0, 255, 0, 0]);
+}
+
+#[test]
+fn effects_change_the_layer_before_it_is_placed() {
+    // A single white pixel blurred with sigma 1 keeps its centre and spreads 3 pixels.
+    let blurred = image_recipe(
+        7,
+        1,
+        "",
+        &solid(
+            "dot",
+            "#ffffffff",
+            1,
+            r#", "transform": {"x": 3}, "effects": [{"type": "blur", "sigma": 1}]"#,
+        ),
+    );
+    let out = still(&blurred, &[]).unwrap();
+    let alphas: Vec<f32> = (0..7).map(|x| out.pixel(x, 0)[3]).collect();
+    assert!(
+        (alphas.iter().sum::<f32>() - 0.39905).abs() < 1e-3,
+        "one row of the 2D kernel: {alphas:?}"
+    );
+    assert!(
+        alphas[3] > alphas[2] && alphas[2] > alphas[1] && alphas[1] > alphas[0] && alphas[0] > 0.0
+    );
+    assert!((alphas[2] - alphas[4]).abs() < 1e-6, "stays centred");
+
+    // A hard shadow two pixels to the right.
+    let shadowed = image_recipe(
+        4,
+        1,
+        "",
+        &solid(
+            "s",
+            "#ffffffff",
+            1,
+            r##", "effects": [{"type": "shadow", "dx": 2, "color": "#000000ff"}]"##,
+        ),
+    );
+    let out = still(&shadowed, &[]).unwrap();
+    assert_eq!(at(&out, 0, 0), [255, 255, 255, 255]);
+    assert_eq!(at(&out, 1, 0), CLEAR);
+    assert_eq!(at(&out, 2, 0), [0, 0, 0, 255]);
+
+    // Saturation 0 on red gives the SVG saturate() grey.
+    let adjusted = image_recipe(
+        1,
+        1,
+        "",
+        &solid(
+            "r",
+            "#ff0000ff",
+            1,
+            r#", "effects": [{"type": "adjust", "saturation": 0}]"#,
+        ),
+    );
+    assert_eq!(at(&still(&adjusted, &[]).unwrap(), 0, 0), [54, 54, 54, 255]);
+
+    // Group effects work in canvas space: brightness 0 turns the whole group black.
+    let group = format!(
+        r#"{{"id": "g", "type": "group", "effects": [{{"type": "adjust", "brightness": 0}}], "layers": [{}]}}"#,
+        solid("w", "#ffffffff", 2, r#", "transform": {"x": 1}"#),
+    );
+    let out = still(&image_recipe(4, 1, "", &group), &[]).unwrap();
+    assert_eq!(at(&out, 0, 0), CLEAR);
+    assert_eq!(at(&out, 1, 0), [0, 0, 0, 255]);
 }
 
 #[test]

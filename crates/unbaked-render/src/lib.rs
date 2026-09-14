@@ -8,6 +8,7 @@ use unbaked_core::recipe::{self, OutputKind};
 use unbaked_core::{bake, pack, rules, sha256_hex, sniff};
 
 pub mod draw;
+pub mod effects;
 pub mod image;
 pub mod motion;
 pub mod scene;
