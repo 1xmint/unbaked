@@ -62,6 +62,8 @@ struct Scene<'a> {
     moment: Moment,
     width: u32,
     height: u32,
+    /// Draw only where text layers land, for [`Frames::text_cover`].
+    cover_text: bool,
 }
 
 /// Draws the frame of an `image` recipe at `output.at_ms`. `file` returns a
@@ -111,6 +113,7 @@ impl<'a> Frames<'a> {
                 moment: Moment::AtMs(output.at_ms),
                 width,
                 height,
+                cover_text: false,
             },
             background,
         })
@@ -136,6 +139,27 @@ impl<'a> Frames<'a> {
             Affine::IDENTITY,
         )?;
         Ok(canvas)
+    }
+
+    /// The pixels text layers cover at `moment`, row by row (section 8): every
+    /// pixel a visible text layer's placed image reaches, after effects,
+    /// ignoring its opacity, mask and blend mode. Text inside masks counts.
+    pub fn text_cover(&mut self, moment: Moment) -> Result<Vec<bool>, RenderError> {
+        let scene = &mut self.scene;
+        let mut canvas = scene.clear_canvas("the canvas")?;
+        scene.moment = moment;
+        scene.cover_text = true;
+        let recipe = scene.recipe;
+        let drawn = scene.layers(
+            &mut canvas,
+            &recipe.layers,
+            "/layers",
+            Span::scene(recipe.output.duration_ms),
+            Affine::IDENTITY,
+        );
+        scene.cover_text = false;
+        drawn?;
+        Ok(canvas.data.as_chunks::<4>().0.iter().map(|p| p[3] > 0.0).collect())
     }
 }
 
@@ -209,6 +233,18 @@ impl<'a> Scene<'a> {
             return Ok(());
         }
         let t = span.local_ms(self.moment);
+        if self.cover_text {
+            if let Some(mask) = &layer.mask {
+                let mask_path = join(&join(path, "mask"), "layers");
+                self.layers(target, &mask.layers, &mask_path, span, outer)?;
+            }
+            if matches!(
+                layer.content,
+                Content::Solid { .. } | Content::Image { .. } | Content::Video { .. }
+            ) {
+                return Ok(());
+            }
+        }
         let moved = transitions(
             layer.transition_in.as_ref(),
             layer.transition_out.as_ref(),
@@ -217,7 +253,12 @@ impl<'a> Scene<'a> {
             f64::from(self.width),
             f64::from(self.height),
         );
-        let opacity = (value_at(&layer.opacity, t) * moved.opacity).clamp(0.0, 1.0) as f32;
+        let (opacity, blend, mask) = if self.cover_text {
+            (1.0, Blend::Normal, None)
+        } else {
+            let opacity = (value_at(&layer.opacity, t) * moved.opacity).clamp(0.0, 1.0) as f32;
+            (opacity, layer.blend, layer.mask.as_ref())
+        };
         let tf = &layer.transform;
         // The layer box is scaled, rotated, then its anchor placed at x, y (section 4.4).
         let own = |box_w: f64, box_h: f64| {
@@ -264,8 +305,8 @@ impl<'a> Scene<'a> {
                         -(source.origin_x + grown.origin_x) as f64,
                         -(source.origin_y + grown.origin_y) as f64,
                     ));
-                if layer.mask.is_none() {
-                    place(target, &grown.image, to_canvas, opacity, layer.blend);
+                if mask.is_none() {
+                    place(target, &grown.image, to_canvas, opacity, blend);
                     return Ok(());
                 }
                 let mut buffer = self.clear_canvas(path)?;
@@ -276,7 +317,7 @@ impl<'a> Scene<'a> {
 
         let mut placed = placed;
         // Step 4: the mask, placed by the enclosing groups but not by this layer's transform.
-        if let Some(mask) = &layer.mask {
+        if let Some(mask) = mask {
             let values = self.mask_values(mask, path, span, outer)?;
             for (px, m) in placed.data.as_chunks_mut::<4>().0.iter_mut().zip(values) {
                 *px = px.map(|c| c * m);
@@ -291,7 +332,7 @@ impl<'a> Scene<'a> {
             .zip(placed.data.as_chunks::<4>().0)
         {
             if src[3] > 0.0 {
-                *dst = composite(layer.blend, *dst, src.map(|c| c * opacity));
+                *dst = composite(blend, *dst, src.map(|c| c * opacity));
             }
         }
         Ok(())
@@ -389,8 +430,12 @@ impl<'a> Scene<'a> {
                         },
                         TextError::TooLarge(e) => too_large(path)(e),
                     })?;
+                let mut image = drawn.image;
+                if self.cover_text {
+                    image.data.fill(1.0);
+                }
                 Ok(Source {
-                    image: drawn.image,
+                    image,
                     box_w: drawn.box_width,
                     box_h: drawn.box_height,
                     scale_x: 1.0,

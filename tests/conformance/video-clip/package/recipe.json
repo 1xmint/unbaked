@@ -1,0 +1,38 @@
+{
+  "unbaked": 0,
+  "output": {
+    "kind": "video",
+    "width": 48,
+    "height": 32,
+    "fps": "30000/1001",
+    "duration_ms": 700
+  },
+  "assets": {
+    "clip": {
+      "path": "assets/clip.mp4"
+    }
+  },
+  "layers": [
+    {
+      "id": "clip",
+      "type": "video",
+      "asset": "clip",
+      "width": 48,
+      "trim_start_ms": 200
+    },
+    {
+      "id": "inset",
+      "type": "video",
+      "asset": "clip",
+      "width": 16,
+      "start_ms": 150,
+      "end_ms": 650,
+      "blend": "screen",
+      "opacity": 0.8,
+      "transform": {
+        "x": 30,
+        "y": 2
+      }
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "unbaked": 0,
+  "output": {
+    "kind": "image",
+    "width": 120,
+    "height": 64,
+    "background": "#f4f0e8ff"
+  },
+  "assets": {
+    "lato": {
+      "ref": {
+        "family": "Lato",
+        "style": "Regular",
+        "sha256": "d636e4683231f931eda222d588e944d082bfd3bdba02f928bee461c0f185b251"
+      }
+    },
+    "gradient": {
+      "path": "assets/gradient.png"
+    }
+  },
+  "layers": [
+    {
+      "id": "title",
+      "type": "text",
+      "text": "Unbaked conformance",
+      "font": "lato",
+      "size_px": 14,
+      "color": "#202020ff",
+      "box_width": 80,
+      "align": "center",
+      "transform": {
+        "x": 4,
+        "y": 2
+      }
+    },
+    {
+      "id": "note",
+      "type": "text",
+      "text": "right\naligned",
+      "font": "lato",
+      "size_px": 9,
+      "color": "#305090ff",
+      "box_width": 30,
+      "align": "right",
+      "line_height": 1.4,
+      "transform": {
+        "x": 88,
+        "y": 2
+      }
+    },
+    {
+      "id": "tilted",
+      "type": "text",
+      "text": "Tilt!",
+      "font": "lato",
+      "size_px": 18,
+      "color": "#c03030ff",
+      "transform": {
+        "x": 80,
+        "y": 46,
+        "anchor_x": 0.5,
+        "anchor_y": 0.5,
+        "rotation_deg": -15
+      },
+      "effects": [
+        {
+          "type": "shadow",
+          "dx": 1,
+          "dy": 1,
+          "sigma": 0.5
+        }
+      ]
+    },
+    {
+      "id": "masked",
+      "type": "image",
+      "asset": "gradient",
+      "width": 66,
+      "transform": {
+        "x": 0,
+        "y": 32
+      },
+      "mask": {
+        "mode": "alpha",
+        "layers": [
+          {
+            "id": "mask-word",
+            "type": "text",
+            "text": "MASK",
+            "font": "lato",
+            "size_px": 20,
+            "color": "#000000ff",
+            "transform": {
+              "x": 4,
+              "y": 36
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

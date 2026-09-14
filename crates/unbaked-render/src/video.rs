@@ -238,6 +238,8 @@ const MAX_PENDING: usize = 16;
 
 struct Decoding {
     decoder: Decoder,
+    /// The sample decoding started from. Samples before it were never fed.
+    first: usize,
     /// The next sample to feed, in decode order.
     next: usize,
     /// Whether the end of the stream has been signalled.
@@ -418,7 +420,8 @@ impl<'a> Video<'a> {
         let samples = &self.track.samples;
         let start = self.start_for(target);
         let reuse = self.state.as_ref().is_some_and(|s| {
-            s.pending.iter().any(|(i, _)| *i == target) || (!s.dropped[target] && start <= s.next)
+            s.pending.iter().any(|(i, _)| *i == target)
+                || (!s.dropped[target] && s.first <= start && start <= s.next)
         });
         if !reuse {
             let mut decoder = Decoder::new().map_err(|e| e.to_string())?;
@@ -430,6 +433,7 @@ impl<'a> Video<'a> {
             };
             self.state = Some(Decoding {
                 decoder,
+                first: start,
                 next: start,
                 ended: false,
                 pending: Vec::new(),

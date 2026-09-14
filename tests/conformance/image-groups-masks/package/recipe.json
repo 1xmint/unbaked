@@ -1,0 +1,146 @@
+{
+  "unbaked": 0,
+  "output": {
+    "kind": "image",
+    "width": 48,
+    "height": 48,
+    "background": "#ffffffff",
+    "at_ms": 300,
+    "duration_ms": 1000
+  },
+  "assets": {
+    "badge": {
+      "path": "assets/badge.png"
+    },
+    "gradient": {
+      "path": "assets/gradient.png"
+    }
+  },
+  "layers": [
+    {
+      "id": "pair",
+      "type": "group",
+      "opacity": 0.5,
+      "transform": {
+        "x": 4,
+        "y": 4,
+        "rotation_deg": 10
+      },
+      "layers": [
+        {
+          "id": "red",
+          "type": "solid",
+          "color": "#ff0000ff",
+          "width": 16,
+          "height": 16,
+          "transform": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "id": "blue",
+          "type": "solid",
+          "color": "#0000ffff",
+          "width": 16,
+          "height": 16,
+          "transform": {
+            "x": 8,
+            "y": 8
+          }
+        }
+      ]
+    },
+    {
+      "id": "alpha-masked",
+      "type": "image",
+      "asset": "gradient",
+      "width": 24,
+      "transform": {
+        "x": 24,
+        "y": 0
+      },
+      "mask": {
+        "mode": "alpha",
+        "layers": [
+          {
+            "id": "alpha-shape",
+            "type": "image",
+            "asset": "badge",
+            "width": 24,
+            "transform": {
+              "x": 24,
+              "y": 0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "luma-masked",
+      "type": "solid",
+      "color": "#008000ff",
+      "width": 24,
+      "height": 24,
+      "transform": {
+        "x": 0,
+        "y": 24
+      },
+      "mask": {
+        "mode": "luminance",
+        "invert": true,
+        "layers": [
+          {
+            "id": "luma-shape",
+            "type": "image",
+            "asset": "gradient",
+            "width": 24,
+            "transform": {
+              "x": 0,
+              "y": 24
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "timed",
+      "type": "group",
+      "start_ms": 100,
+      "blend": "multiply",
+      "effects": [
+        {
+          "type": "blur",
+          "sigma": 1
+        }
+      ],
+      "layers": [
+        {
+          "id": "late",
+          "type": "solid",
+          "color": "#ff8000ff",
+          "width": 20,
+          "height": 20,
+          "transform": {
+            "x": 26,
+            "y": 26
+          },
+          "start_ms": 100,
+          "end_ms": 500,
+          "opacity": {
+            "keys": [
+              {
+                "t_ms": 0,
+                "v": 1
+              },
+              {
+                "t_ms": 300,
+                "v": 0.2
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

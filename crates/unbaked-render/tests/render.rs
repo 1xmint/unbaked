@@ -215,6 +215,34 @@ fn video_layers_show_the_frame_at_their_source_time() {
 }
 
 #[test]
+fn two_layers_can_show_one_clip_at_different_times() {
+    use unbaked_render::scene::Frames;
+    use unbaked_render::timing::Moment;
+
+    // One decoder serves both layers, so each frame asks it to jump back and forth.
+    let recipe = recipe::parse(
+        br#"{"unbaked": 0, "output": {"kind": "image", "width": 192, "height": 64},
+            "assets": {"clip": {"path": "assets/clip.mp4"}},
+            "layers": [{"id": "late", "type": "video", "asset": "clip", "trim_start_ms": 600},
+                       {"id": "early", "type": "video", "asset": "clip", "transform": {"x": 96}}]}"#,
+    )
+    .unwrap();
+    let lookup = |path: &str| (path == "assets/clip.mp4").then_some(CLIP);
+    let mut frames = Frames::new(&recipe, &lookup, &NoFonts, RenderLimits::default()).unwrap();
+    let files = [("assets/clip.mp4", CLIP)];
+    let alone = |at_ms: u64, trim: u64| {
+        let output = format!(r#"{{"kind": "image", "width": 96, "height": 64, "at_ms": {at_ms}}}"#);
+        let layer = format!(r#", "trim_start_ms": {trim}"#);
+        clip_frame(&still(&video_recipe(&output, &layer), &files).unwrap(), 8, 8)
+    };
+    for at_ms in (0..1300).step_by(50) {
+        let canvas = frames.draw(Moment::AtMs(at_ms)).unwrap();
+        assert_eq!(clip_frame(&canvas, 8, 8), alone(at_ms, 600), "late at {at_ms}");
+        assert_eq!(clip_frame(&canvas, 104, 8), alone(at_ms, 0), "early at {at_ms}");
+    }
+}
+
+#[test]
 fn video_recipes_render_a_fresh_mp4() {
     use unbaked_render::mp4;
     use unbaked_render::sound::decode;
