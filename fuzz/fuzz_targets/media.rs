@@ -1,10 +1,10 @@
 //! The renderer's readers for hostile asset files: the MP4 reader, video
-//! frames through OpenH264, and sound decoding.
+//! frames through OpenH264, image decoding, and sound decoding.
 
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use unbaked_render::{mp4, sound, video::Video};
+use unbaked_render::{image, mp4, sound, video::Video};
 
 const MAX_SAMPLES: u64 = 1 << 16;
 const MAX_PIXELS: u64 = 1 << 20;
@@ -22,5 +22,8 @@ fuzz_target!(|file: &[u8]| {
             }
         }
     }
+    let _ = image::decode_png(file, MAX_PIXELS);
+    let _ = image::decode_jpeg(file, MAX_PIXELS);
+    let _ = image::decode_webp(file, MAX_PIXELS);
     let _ = sound::decode(file, MAX_SAMPLES);
 });

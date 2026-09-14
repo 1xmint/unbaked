@@ -886,3 +886,24 @@ fn a_passed_deadline_stops_sound_and_video() {
         );
     }
 }
+
+#[test]
+fn webp_decodes_exactly_and_animated_webp_is_refused() {
+    let file = include_bytes!("../../../tests/conformance/image-webp/package/assets/swatch.webp");
+    let image = unbaked_render::image::decode_webp(file, 1000).unwrap();
+    assert_eq!((image.width, image.height), (12, 10));
+    for y in 0..10 {
+        for x in 0..12 {
+            let want = [x * 21, y * 25, 255 - x * 10, 255 - (x + y) * 12].map(|v| v as u8);
+            assert_eq!(at(&image, x, y), want, "pixel {x},{y}");
+        }
+    }
+    assert!(unbaked_render::image::decode_webp(file, 100).is_err());
+
+    let mut animated =
+        b"RIFF\0\0\0\0WEBPVP8X\x0a\0\0\0\x02\0\0\0\x0b\0\0\x09\0\0ANIM\x06\0\0\0\0\0\0\0\0\0"
+            .to_vec();
+    let size = (animated.len() - 8) as u32;
+    animated[4..8].copy_from_slice(&size.to_le_bytes());
+    assert!(unbaked_render::image::decode_webp(&animated, 1000).is_err());
+}

@@ -32,6 +32,55 @@ def wav(rate, channels, frames):
             + b"data" + struct.pack("<I", len(data)) + data)
 
 
+def webp_lossless(width, height, pixel):
+    """A lossless WebP (VP8L) with no transforms and every channel coded in 8 bits."""
+    bits = []
+
+    def put(value, n):
+        bits.extend((value >> i) & 1 for i in range(n))
+
+    def prefix_code(alphabet, used):
+        # A normal prefix code: the code length code gives symbols 0 and 8 one bit
+        # each, then `used` symbols get length 8 and the rest 0.
+        put(0, 1)
+        order = [17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8]
+        put(len(order) - 4, 4)
+        for symbol in order:
+            put(1 if symbol in (0, 8) else 0, 3)
+        put(0, 1)  # lengths for the whole alphabet
+        for s in range(alphabet):
+            put(1 if s < used else 0, 1)
+
+    def symbol(value):
+        # Canonical codes read most significant bit first.
+        for i in range(7, -1, -1):
+            put((value >> i) & 1, 1)
+
+    put(0x2F, 8)
+    put(width - 1, 14)
+    put(height - 1, 14)
+    put(1, 1)  # alpha is used
+    put(0, 3)  # version
+    put(0, 1)  # no transform
+    put(0, 1)  # no colour cache
+    put(0, 1)  # no meta prefix codes
+    prefix_code(256 + 24, 256)  # green and lengths
+    for _ in range(3):  # red, blue, alpha
+        prefix_code(256, 256)
+    put(1, 1)  # distance: a simple code with one symbol
+    put(0, 1)
+    put(0, 1)
+    put(0, 1)
+    for y in range(height):
+        for x in range(width):
+            r, g, b, a = pixel(x, y)
+            for v in (g, r, b, a):
+                symbol(v)
+    data = bytes(sum(bit << i for i, bit in enumerate(bits[k:k + 8])) for k in range(0, len(bits), 8))
+    chunk = b"VP8L" + struct.pack("<I", len(data)) + data + (b"\0" if len(data) % 2 else b"")
+    return b"RIFF" + struct.pack("<I", 4 + len(chunk)) + b"WEBP" + chunk
+
+
 def tone(freq, rate, ms, amp):
     return [amp * math.sin(2 * math.pi * freq * k / rate) for k in range(rate * ms // 1000)]
 
@@ -49,6 +98,8 @@ def badge(x, y):
 ASSETS = {
     "gradient.png": lambda: png(48, 32, gradient),
     "badge.png": lambda: png(8, 8, badge),
+    # Partly transparent, so the alpha channel's code is exercised too.
+    "swatch.webp": lambda: webp_lossless(12, 10, lambda x, y: (x * 21, y * 25, 255 - x * 10, 255 - (x + y) * 12)),
     "tone-44k-mono.wav": lambda: wav(44100, 1, [(s,) for s in tone(440, 44100, 250, 0.4)]),
     "chord-48k-stereo.wav": lambda: wav(48000, 2, list(zip(tone(330, 48000, 200, 0.3), tone(550, 48000, 200, 0.3)))),
 }
@@ -180,6 +231,14 @@ CASES = {
                   "color": "#000000ff", "transform": at(4, 36)}]}},
         ],
     }, ["gradient.png"]),
+    "image-webp": ({
+        "output": {"kind": "image", "width": 40, "height": 24, "background": "#204060ff"},
+        "assets": {"swatch": {"path": "assets/swatch.webp"}},
+        "layers": [
+            {"id": "native", "type": "image", "asset": "swatch", "transform": at(2, 2)},
+            {"id": "scaled", "type": "image", "asset": "swatch", "width": 20, "transform": at(18, 2)},
+        ],
+    }, ["swatch.webp"]),
     "video-motion": ({
         "output": {"kind": "video", "width": 48, "height": 32, "fps": "10", "duration_ms": 1000},
         "assets": {"gradient": {"path": "assets/gradient.png"}},

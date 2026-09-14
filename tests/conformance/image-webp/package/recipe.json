@@ -1,0 +1,35 @@
+{
+  "unbaked": 0,
+  "output": {
+    "kind": "image",
+    "width": 40,
+    "height": 24,
+    "background": "#204060ff"
+  },
+  "assets": {
+    "swatch": {
+      "path": "assets/swatch.webp"
+    }
+  },
+  "layers": [
+    {
+      "id": "native",
+      "type": "image",
+      "asset": "swatch",
+      "transform": {
+        "x": 2,
+        "y": 2
+      }
+    },
+    {
+      "id": "scaled",
+      "type": "image",
+      "asset": "swatch",
+      "width": 20,
+      "transform": {
+        "x": 18,
+        "y": 2
+      }
+    }
+  ]
+}

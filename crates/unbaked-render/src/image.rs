@@ -2,6 +2,7 @@
 
 use std::io::Cursor;
 
+use image_webp::WebPDecoder;
 use zune_core::colorspace::ColorSpace;
 use zune_core::options::DecoderOptions;
 use zune_jpeg::JpegDecoder;
@@ -186,6 +187,32 @@ pub fn decode_jpeg(bytes: &[u8], max_pixels: u64) -> Result<Pixmap, String> {
     let rgb = decoder.decode().map_err(|e| e.to_string())?;
     let image = from_samples(width, height, 3, rgb.iter().map(|&s| f32::from(s) / 255.0));
     Ok(orient(&image, orientation))
+}
+
+/// Decodes a still WebP, lossy or lossless. Animated WebP is refused, and any
+/// EXIF orientation is ignored, as for PNG (section 5.1).
+pub fn decode_webp(bytes: &[u8], max_pixels: u64) -> Result<Pixmap, String> {
+    let mut decoder = WebPDecoder::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
+    if decoder.is_animated() {
+        return Err("animated WebP is not supported".into());
+    }
+    let (width, height) = decoder.dimensions();
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels > max_pixels {
+        return Err(format!("{width}x{height} is more than {max_pixels} pixels"));
+    }
+    let size = decoder
+        .output_buffer_size()
+        .ok_or("image is too large to decode")?;
+    let mut buf = vec![0; size];
+    decoder.read_image(&mut buf).map_err(|e| e.to_string())?;
+    let channels = if decoder.has_alpha() { 4 } else { 3 };
+    Ok(from_samples(
+        width,
+        height,
+        channels,
+        buf.iter().map(|&s| f32::from(s) / 255.0),
+    ))
 }
 
 /// The EXIF orientation tag (1–8) from TIFF-structured EXIF data, or 1.

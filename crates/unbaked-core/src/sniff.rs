@@ -6,6 +6,8 @@
 pub enum AssetKind {
     Png,
     Jpeg,
+    /// A still or animated WebP. Renderers refuse animated ones when decoding.
+    Webp,
     /// An MP4 or M4A. Which tracks it holds is not checked here.
     Mp4,
     Mp3,
@@ -17,7 +19,7 @@ pub enum AssetKind {
 
 impl AssetKind {
     pub fn is_image(self) -> bool {
-        matches!(self, AssetKind::Png | AssetKind::Jpeg)
+        matches!(self, AssetKind::Png | AssetKind::Jpeg | AssetKind::Webp)
     }
 
     pub fn is_video(self) -> bool {
@@ -51,6 +53,9 @@ pub fn detect(head: &[u8]) -> Option<AssetKind> {
     }
     if at(4, b"ftyp") {
         return Some(AssetKind::Mp4);
+    }
+    if at(0, b"RIFF") && at(8, b"WEBP") {
+        return Some(AssetKind::Webp);
     }
     if at(0, b"RIFF") && at(8, b"WAVE") {
         return Some(AssetKind::Wav);
@@ -94,6 +99,7 @@ mod tests {
             (b"\0\0\0\x20ftypisom", AssetKind::Mp4),
             (b"\0\0\0\x1cftypM4A ", AssetKind::Mp4),
             (b"RIFF\x24\0\0\0WAVE", AssetKind::Wav),
+            (b"RIFF\x24\0\0\0WEBP", AssetKind::Webp),
             (b"fLaC\0\0\0\x22", AssetKind::Flac),
             (b"\0\x01\0\0\0\x10\x01\0", AssetKind::Font),
             (b"OTTO\0\x0c\0\x80", AssetKind::Font),
