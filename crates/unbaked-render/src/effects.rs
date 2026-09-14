@@ -2,9 +2,11 @@
 
 use unbaked_core::recipe::{Blend, Color, Effect};
 
+use crate::RenderError;
 use crate::draw::{bilinear, composite};
-use crate::image::{Pixmap, TooLarge, premultiply};
+use crate::image::{Pixmap, premultiply};
 use crate::motion::value_at;
+use crate::scene::RenderLimits;
 
 /// An image after effects, and where the original image's top-left pixel sits
 /// inside it. Blur and shadow grow the image; the layer box does not move.
@@ -15,13 +17,15 @@ pub struct Effected {
     pub origin_y: i64,
 }
 
-/// Applies `effects` in order at local time `t_ms`.
+/// Applies `effects` in order at local time `t_ms`. `what` names the layer in
+/// errors.
 pub fn apply(
     image: Pixmap,
     effects: &[Effect],
     t_ms: f64,
-    max_pixels: u64,
-) -> Result<Effected, TooLarge> {
+    limits: RenderLimits,
+    what: &str,
+) -> Result<Effected, RenderError> {
     let mut out = Effected {
         image,
         origin_x: 0,
@@ -31,7 +35,7 @@ pub fn apply(
         match effect {
             Effect::Blur { sigma } => {
                 let sigma = value_at(sigma, t_ms);
-                let (image, radius) = blur(&out.image, sigma, max_pixels)?;
+                let (image, radius) = blur(&out.image, sigma, limits, what)?;
                 out.image = image;
                 out.origin_x += radius;
                 out.origin_y += radius;
@@ -48,7 +52,8 @@ pub fn apply(
                     value_at(dy, t_ms),
                     value_at(sigma, t_ms),
                     *color,
-                    max_pixels,
+                    limits,
+                    what,
                 )?;
                 out.image = image;
                 out.origin_x += ox;
@@ -69,10 +74,14 @@ pub fn apply(
     Ok(out)
 }
 
-fn blank(width: u64, height: u64, max_pixels: u64) -> Result<Pixmap, TooLarge> {
+fn blank(width: u64, height: u64, limits: RenderLimits, what: &str) -> Result<Pixmap, RenderError> {
     let w = u32::try_from(width).unwrap_or(u32::MAX);
     let h = u32::try_from(height).unwrap_or(u32::MAX);
-    Pixmap::filled(w, h, [0.0; 4], max_pixels)
+    Pixmap::filled(w, h, [0.0; 4], limits.max_pixels).map_err(|e| RenderError::TooLarge {
+        what: what.to_owned(),
+        pixels: e.pixels,
+        limit: e.limit,
+    })
 }
 
 /// Gaussian weights for offsets `-r..=r`, `r = ceil(3σ)`, summing to 1.
@@ -89,17 +98,24 @@ fn kernel(sigma: f64) -> Vec<f32> {
 }
 
 /// Blurs premultiplied colour, growing the image by the kernel radius on every
-/// side. Returns the image and the radius.
-pub fn blur(image: &Pixmap, sigma: f64, max_pixels: u64) -> Result<(Pixmap, i64), TooLarge> {
+/// side. Returns the image and the radius. The deadline is checked every row,
+/// since the cost grows with the radius as well as the size.
+pub fn blur(
+    image: &Pixmap,
+    sigma: f64,
+    limits: RenderLimits,
+    what: &str,
+) -> Result<(Pixmap, i64), RenderError> {
     let weights = kernel(sigma);
     let radius = (weights.len() / 2) as i64;
     let (w, h) = (i64::from(image.width), i64::from(image.height));
     let (gw, gh) = (w + 2 * radius, h + 2 * radius);
-    let mut across = blank(gw as u64, gh as u64, max_pixels)?;
-    let mut out = blank(gw as u64, gh as u64, max_pixels)?;
+    let mut across = blank(gw as u64, gh as u64, limits, what)?;
+    let mut out = blank(gw as u64, gh as u64, limits, what)?;
 
     // Horizontal pass: grown pixel (x, y) is original pixel (x - r, y - r).
     for y in 0..gh {
+        limits.check_time()?;
         for x in 0..gw {
             let mut sum = [0.0f32; 4];
             for (k, weight) in weights.iter().enumerate() {
@@ -113,6 +129,7 @@ pub fn blur(image: &Pixmap, sigma: f64, max_pixels: u64) -> Result<(Pixmap, i64)
     }
     // Vertical pass.
     for y in 0..gh {
+        limits.check_time()?;
         for x in 0..gw {
             let mut sum = [0.0f32; 4];
             for (k, weight) in weights.iter().enumerate() {
@@ -135,14 +152,15 @@ pub fn shadow(
     dy: f64,
     sigma: f64,
     color: Color,
-    max_pixels: u64,
-) -> Result<(Pixmap, i64, i64), TooLarge> {
+    limits: RenderLimits,
+    what: &str,
+) -> Result<(Pixmap, i64, i64), RenderError> {
     let fill = [color.r, color.g, color.b, color.a].map(|c| f32::from(c) / 255.0);
     let mut silhouette = image.clone();
     for px in silhouette.data.as_chunks_mut::<4>().0 {
         *px = premultiply([fill[0], fill[1], fill[2], fill[3] * px[3]]);
     }
-    let (blurred, radius) = blur(&silhouette, sigma, max_pixels)?;
+    let (blurred, radius) = blur(&silhouette, sigma, limits, what)?;
 
     let (w, h) = (f64::from(image.width), f64::from(image.height));
     let r = radius as f64;
@@ -151,9 +169,10 @@ pub fn shadow(
     let max_x = (w + dx + r).max(w).ceil();
     let max_y = (h + dy + r).max(h).ceil();
     let (ox, oy) = (-min_x as i64, -min_y as i64);
-    let mut out = blank((max_x - min_x) as u64, (max_y - min_y) as u64, max_pixels)?;
+    let mut out = blank((max_x - min_x) as u64, (max_y - min_y) as u64, limits, what)?;
 
     for y in 0..out.height {
+        limits.check_time()?;
         for x in 0..out.width {
             // Pixel centre in the original image's coordinates.
             let px = f64::from(x) - ox as f64 + 0.5;
@@ -193,6 +212,13 @@ pub fn adjust(image: &mut Pixmap, brightness: f32, contrast: f32, saturation: f3
 mod tests {
     use super::*;
 
+    fn pixels(max_pixels: u64) -> RenderLimits {
+        RenderLimits {
+            max_pixels,
+            ..RenderLimits::default()
+        }
+    }
+
     fn dot(size: u32, x: u32, y: u32) -> Pixmap {
         let mut image = Pixmap::filled(size, size, [0.0; 4], 10_000).unwrap();
         image.set(x, y, [1.0, 1.0, 1.0, 1.0]);
@@ -211,7 +237,7 @@ mod tests {
 
     #[test]
     fn blur_grows_the_image_and_keeps_its_total() {
-        let (out, radius) = blur(&dot(1, 0, 0), 1.0, 10_000).unwrap();
+        let (out, radius) = blur(&dot(1, 0, 0), 1.0, pixels(10_000), "dot").unwrap();
         assert_eq!(radius, 3);
         assert_eq!((out.width, out.height), (7, 7));
         let total: f32 = out.data.as_chunks::<4>().0.iter().map(|p| p[3]).sum();
@@ -229,14 +255,16 @@ mod tests {
             b: 0,
             a: 255,
         };
-        let (out, ox, oy) = shadow(&dot(1, 0, 0), 2.0, 0.0, 0.0, black, 100).unwrap();
+        let (out, ox, oy) =
+            shadow(&dot(1, 0, 0), 2.0, 0.0, 0.0, black, pixels(100), "dot").unwrap();
         assert_eq!((out.width, out.height, ox, oy), (3, 1, 0, 0));
         assert_eq!(out.pixel(0, 0), [1.0, 1.0, 1.0, 1.0]);
         assert_eq!(out.pixel(1, 0), [0.0; 4]);
         assert_eq!(out.pixel(2, 0), [0.0, 0.0, 0.0, 1.0]);
 
         // A shadow up and to the left moves the original's position in the image.
-        let (out, ox, oy) = shadow(&dot(1, 0, 0), -1.0, -1.0, 0.0, black, 100).unwrap();
+        let (out, ox, oy) =
+            shadow(&dot(1, 0, 0), -1.0, -1.0, 0.0, black, pixels(100), "dot").unwrap();
         assert_eq!((out.width, out.height, ox, oy), (2, 2, 1, 1));
         assert_eq!(out.pixel(1, 1), [1.0, 1.0, 1.0, 1.0]);
         assert_eq!(out.pixel(0, 0), [0.0, 0.0, 0.0, 1.0]);

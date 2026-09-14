@@ -759,6 +759,7 @@ as hostile:
 - Enforce the ZIP rules in section 3.2 before extracting anything.
 - Never write package paths to disk without the section 3.2 checks.
 - Bound canvas size, duration, decoded image size and memory. Fail with a clear error, not a crash.
+- Bound time as well as memory. Work can grow with a setting and not only with buffer size (a blur's cost grows with its radius), so a renderer serving strangers stops a render that runs past a time limit and reports it.
 - Never execute anything from a package. The format contains no scripts, and version 0 has no field that can reference a URL or a file outside the package.
 
 ---

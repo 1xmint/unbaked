@@ -19,7 +19,7 @@ pub mod text;
 pub mod timing;
 pub mod video;
 
-pub use scene::RenderLimits;
+pub use scene::{Deadline, RenderLimits};
 
 /// Names this renderer in `bake.json`.
 pub const RENDERER: &str = concat!("unbaked-render ", env!("CARGO_PKG_VERSION"));
@@ -57,6 +57,10 @@ pub enum RenderError {
     TooManyFrames {
         frames: u64,
         limit: u64,
+    },
+    /// The render passed [`RenderLimits::deadline`].
+    TimedOut {
+        limit_ms: u64,
     },
     /// The result could not be packaged.
     Package(PackageError),
@@ -102,6 +106,9 @@ impl fmt::Display for RenderError {
                 f,
                 "the video has {frames} frames, more than the limit of {limit}"
             ),
+            RenderError::TimedOut { limit_ms } => {
+                write!(f, "the render took longer than the limit of {limit_ms} ms")
+            }
             RenderError::Package(e) => write!(f, "{e}"),
             RenderError::Encode(e) => write!(f, "could not encode the render: {e}"),
         }
@@ -159,7 +166,8 @@ pub fn render(
                 .map_err(RenderError::Encode)?
         }
         OutputKind::Audio => {
-            let pcm = sound::mix(&recipe, &file, limits.max_samples)?;
+            let pcm = sound::mix(&recipe, &file, limits)?;
+            limits.check_time()?;
             sound::encode_m4a(&pcm).map_err(RenderError::Encode)?
         }
         OutputKind::Video => movie::render_video(&recipe, &file, fonts, limits)?,

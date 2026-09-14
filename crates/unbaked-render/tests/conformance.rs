@@ -152,7 +152,7 @@ fn render_case(case: &Path) -> Result<BTreeMap<String, Output>, String> {
         );
     }
     if !recipe.audio.is_empty() {
-        let pcm = sound::mix(&recipe, &file, limits.max_samples).map_err(|e| e.to_string())?;
+        let pcm = sound::mix(&recipe, &file, limits).map_err(|e| e.to_string())?;
         outputs.insert("audio.wav".into(), Output::Audio(pcm));
     }
     Ok(outputs)

@@ -21,6 +21,7 @@ use unbaked_core::sniff::{self, AssetKind};
 use crate::RenderError;
 use crate::motion::value_at;
 use crate::mp4;
+use crate::scene::{Deadline, RenderLimits};
 
 /// Decoded sound: one sample vector per channel, all the same length.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,12 +46,22 @@ pub const AAC_PRIMING: u32 = 1024;
 /// Decodes an audio file, or the first sound track of an MP4 file. `max_samples`
 /// caps the samples per channel.
 pub fn decode(bytes: &[u8], max_samples: u64) -> Result<Pcm, String> {
+    decode_within(bytes, max_samples, None)
+}
+
+/// [`decode`], stopping with an error once `deadline` passes. The deadline is
+/// checked between decoded chunks.
+fn decode_within(
+    bytes: &[u8],
+    max_samples: u64,
+    deadline: Option<Deadline>,
+) -> Result<Pcm, String> {
     let head = &bytes[..bytes.len().min(sniff::HEADER_LEN)];
     let pcm = match sniff::detect(head) {
-        Some(AssetKind::Mp4) => decode_mp4(bytes, max_samples)?,
+        Some(AssetKind::Mp4) => decode_mp4(bytes, max_samples, deadline)?,
         Some(AssetKind::Mp3 | AssetKind::Wav | AssetKind::Flac) => {
             check_wav_channels(bytes)?;
-            decode_other(bytes, max_samples)?
+            decode_other(bytes, max_samples, deadline)?
         }
         _ => return Err("not an audio file".into()),
     };
@@ -97,6 +108,13 @@ fn check_wav_channels(bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+fn out_of_time(deadline: Option<Deadline>) -> Result<(), String> {
+    match deadline {
+        Some(d) if d.passed() => Err("the time limit passed".into()),
+        _ => Ok(()),
+    }
+}
+
 fn too_long(n: usize, max: u64) -> Result<(), String> {
     if n as u64 > max {
         return Err(format!("the sound has more than {max} samples per channel"));
@@ -120,7 +138,7 @@ fn append(pcm: &mut Vec<Vec<f32>>, planes: Vec<Vec<f32>>) -> Result<(), String> 
 
 /// MP3, WAV and FLAC through symphonia's own readers, with encoder delay and
 /// padding removed.
-fn decode_other(bytes: &[u8], max_samples: u64) -> Result<Pcm, String> {
+fn decode_other(bytes: &[u8], max_samples: u64, deadline: Option<Deadline>) -> Result<Pcm, String> {
     let source = MediaSourceStream::new(
         Box::new(Cursor::new(bytes)),
         MediaSourceStreamOptions::default(),
@@ -146,6 +164,7 @@ fn decode_other(bytes: &[u8], max_samples: u64) -> Result<Pcm, String> {
     let mut channels = Vec::new();
     let mut rate = params.sample_rate.unwrap_or(0);
     loop {
+        out_of_time(deadline)?;
         let packet = match reader.next_packet() {
             Ok(Some(packet)) => packet,
             Ok(None) => break,
@@ -175,7 +194,7 @@ fn decode_other(bytes: &[u8], max_samples: u64) -> Result<Pcm, String> {
 
 /// AAC-LC from an MP4 file's first sound track, placed on the track's
 /// timeline by its edit list.
-fn decode_mp4(bytes: &[u8], max_samples: u64) -> Result<Pcm, String> {
+fn decode_mp4(bytes: &[u8], max_samples: u64, deadline: Option<Deadline>) -> Result<Pcm, String> {
     let movie = mp4::read(bytes, max_samples)?;
     let track = movie
         .tracks
@@ -240,6 +259,7 @@ fn decode_mp4(bytes: &[u8], max_samples: u64) -> Result<Pcm, String> {
     let mut channels: Vec<Vec<f32>> = Vec::new();
     let mut rate = 0;
     for sample in &track.samples {
+        out_of_time(deadline)?;
         let data = track.sample_data(bytes, sample)?;
         let packet = Packet::new(
             0,
@@ -301,8 +321,18 @@ const SINC_ZEROS: f64 = 16.0;
 /// Windowed-sinc resampling (Blackman window). The pass band ends at 95% of
 /// the lower Nyquist frequency.
 pub fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
+    resample_within(input, from, to, None).expect("no deadline to pass")
+}
+
+/// [`resample`], or `None` once `deadline` passes.
+fn resample_within(
+    input: &[f32],
+    from: u32,
+    to: u32,
+    deadline: Option<Deadline>,
+) -> Option<Vec<f32>> {
     if from == to || input.is_empty() {
-        return input.to_vec();
+        return Some(input.to_vec());
     }
     let cutoff = 0.95 * f64::from(from.min(to)) / f64::from(from);
     let half = (SINC_ZEROS / cutoff).ceil() as i64;
@@ -341,6 +371,9 @@ pub fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
 
     let mut out = Vec::with_capacity(out_len);
     for k in 0..out_len as u64 {
+        if k % 65_536 == 0 && deadline.is_some_and(|d| d.passed()) {
+            return None;
+        }
         // Output sample k sits at source position k·from/to.
         let pos = k * step;
         let (whole, phase) = ((pos / phases) as i64, pos % phases);
@@ -360,7 +393,7 @@ pub fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
         }
         out.push(acc);
     }
-    out
+    Some(out)
 }
 
 fn gcd(mut a: u32, mut b: u32) -> u32 {
@@ -396,8 +429,9 @@ fn map_channels(mut channels: Vec<Vec<f32>>, wanted: u8) -> Result<Vec<Vec<f32>>
 pub fn mix<'a>(
     recipe: &'a Recipe,
     file: &'a dyn Fn(&str) -> Option<&'a [u8]>,
-    max_samples: u64,
+    limits: RenderLimits,
 ) -> Result<Pcm, RenderError> {
+    let max_samples = limits.max_samples;
     let output = &recipe.output;
     let rate = output.sample_rate;
     let duration_ms = output.duration_ms.unwrap_or(0);
@@ -416,6 +450,7 @@ pub fn mix<'a>(
         if clip.muted {
             continue;
         }
+        limits.check_time()?;
         let path = format!("/audio/{i}");
         if !sources.contains_key(clip.asset.as_str()) {
             let asset = recipe
@@ -434,12 +469,24 @@ pub fn mix<'a>(
                 asset: file_path.clone(),
                 message,
             };
-            let decoded = decode(bytes, max_samples).map_err(fail)?;
-            let resampled: Vec<Vec<f32>> = decoded
+            let decoded = match decode_within(bytes, max_samples, limits.deadline) {
+                Ok(decoded) => decoded,
+                Err(message) => {
+                    limits.check_time()?;
+                    return Err(fail(message));
+                }
+            };
+            let resampled = decoded
                 .channels
                 .iter()
-                .map(|c| resample(c, decoded.rate, rate))
-                .collect();
+                .map(|c| resample_within(c, decoded.rate, rate, limits.deadline))
+                .collect::<Option<Vec<Vec<f32>>>>();
+            // Resampling stops early only when the deadline has passed.
+            let Some(resampled) = resampled else {
+                return Err(RenderError::TimedOut {
+                    limit_ms: limits.deadline.map_or(0, |d| d.limit_ms()),
+                });
+            };
             let mapped = map_channels(resampled, output.channels).map_err(fail)?;
             sources.insert(
                 &clip.asset,

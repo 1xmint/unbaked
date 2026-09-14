@@ -1,11 +1,13 @@
 //! Renders small recipes and checks exact output pixels.
 
+use std::time::Instant;
+
 use unbaked_core::package::Limits;
 use unbaked_core::recipe;
 use unbaked_core::{Status, open, pack};
 use unbaked_render::image::{Pixmap, decode_png, encode_png};
 use unbaked_render::scene::render_still;
-use unbaked_render::{FontSource, NoFonts, RenderError, RenderLimits, render};
+use unbaked_render::{Deadline, FontSource, NoFonts, RenderError, RenderLimits, render};
 
 fn still(recipe_json: &str, files: &[(&str, &[u8])]) -> Result<Pixmap, RenderError> {
     let recipe = recipe::parse(recipe_json.as_bytes()).expect("test recipe parses");
@@ -835,4 +837,52 @@ fn audio_recipes_render_a_fresh_m4a() {
         err.to_string(),
         "the sound needs 48000 samples per channel, more than the limit of 1000"
     );
+}
+
+#[test]
+fn a_huge_blur_stops_at_the_time_limit() {
+    // Radius 300 on a 1500x1500 solid: billions of samples, far past 50 ms.
+    let recipe_json = image_recipe(
+        1500,
+        1500,
+        "",
+        r##"{"id": "wall", "type": "solid", "color": "#ffffffff", "width": 1500, "height": 1500,
+            "effects": [{"type": "blur", "sigma": 100}]}"##,
+    );
+    let recipe = recipe::parse(recipe_json.as_bytes()).unwrap();
+    let limits = RenderLimits {
+        deadline: Some(Deadline::after_ms(50)),
+        ..RenderLimits::default()
+    };
+    let started = Instant::now();
+    let err = render_still(&recipe, &|_| None, &NoFonts, limits).unwrap_err();
+    assert_eq!(err, RenderError::TimedOut { limit_ms: 50 });
+    assert_eq!(
+        err.to_string(),
+        "the render took longer than the limit of 50 ms"
+    );
+    // Allocating the buffers takes a moment in a debug build; the blur itself does not run on.
+    assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
+}
+
+#[test]
+fn a_passed_deadline_stops_sound_and_video() {
+    let limits = RenderLimits {
+        deadline: Some(Deadline::after_ms(0)),
+        ..RenderLimits::default()
+    };
+    let audio = pack::Files::from([(
+        "recipe.json".to_owned(),
+        br#"{"unbaked": 0, "output": {"kind": "audio", "duration_ms": 100}, "assets": {}, "audio": []}"#.to_vec(),
+    )]);
+    let video = pack::Files::from([(
+        "recipe.json".to_owned(),
+        br#"{"unbaked": 0, "output": {"kind": "video", "width": 16, "height": 16, "fps": "10", "duration_ms": 100}, "assets": {}, "layers": []}"#.to_vec(),
+    )]);
+    for files in [audio, video] {
+        assert_eq!(
+            render(&files, &NoFonts, limits).unwrap_err(),
+            RenderError::TimedOut { limit_ms: 0 }
+        );
+    }
 }

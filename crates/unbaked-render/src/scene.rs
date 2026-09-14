@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use unbaked_core::json::join;
 use unbaked_core::recipe::{AssetSource, Blend, Color, Content, Layer, Mask, MaskMode, Recipe};
@@ -32,18 +33,61 @@ pub struct RenderLimits {
     pub max_samples: u64,
     /// Most frames in a video. The encoded video is held in memory.
     pub max_frames: u64,
+    /// When the render must stop. Checked between rows of a blur, layers,
+    /// frames, text lines, sound clips and decoded chunks of sound.
+    pub deadline: Option<Deadline>,
 }
 
 impl Default for RenderLimits {
     /// 64 million pixels, about 1 GiB per floating-point buffer, and 256
     /// million samples, 88 minutes of stereo at 48 kHz in about 2 GiB. 54,000
-    /// frames, 30 minutes at 30 fps.
+    /// frames, 30 minutes at 30 fps. No deadline.
     fn default() -> Self {
         RenderLimits {
             max_pixels: 64_000_000,
             max_samples: 256_000_000,
             max_frames: 54_000,
+            deadline: None,
         }
+    }
+}
+
+impl RenderLimits {
+    /// Fails with [`RenderError::TimedOut`] once the deadline has passed.
+    pub fn check_time(&self) -> Result<(), RenderError> {
+        match self.deadline {
+            Some(deadline) if deadline.passed() => Err(RenderError::TimedOut {
+                limit_ms: deadline.limit_ms,
+            }),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// A moment a render must finish by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Deadline {
+    /// `None` when the limit is too far off to represent.
+    at: Option<Instant>,
+    limit_ms: u64,
+}
+
+impl Deadline {
+    /// `limit_ms` milliseconds from now.
+    pub fn after_ms(limit_ms: u64) -> Deadline {
+        Deadline {
+            at: Instant::now().checked_add(Duration::from_millis(limit_ms)),
+            limit_ms,
+        }
+    }
+
+    /// The time allowed, as given to [`Deadline::after_ms`].
+    pub fn limit_ms(&self) -> u64 {
+        self.limit_ms
+    }
+
+    pub fn passed(&self) -> bool {
+        self.at.is_some_and(|at| Instant::now() >= at)
     }
 }
 
@@ -234,6 +278,7 @@ impl<'a> Scene<'a> {
         parent: Span,
         outer: Affine,
     ) -> Result<(), RenderError> {
+        self.limits.check_time()?;
         let span = parent.child(layer.start_ms, layer.end_ms);
         if layer.hidden || !span.visible_at(self.moment) {
             return Ok(());
@@ -290,8 +335,7 @@ impl<'a> Scene<'a> {
                 self.layers(&mut buffer, layers, &join(path, "layers"), span, transform)?;
                 if !layer.effects.is_empty() {
                     // Group effects work in canvas space; what they push off the canvas is lost.
-                    let grown = effects::apply(buffer, &layer.effects, t, self.limits.max_pixels)
-                        .map_err(too_large(path))?;
+                    let grown = effects::apply(buffer, &layer.effects, t, self.limits, path)?;
                     buffer = self.crop_to_canvas(&grown, path)?;
                 }
                 buffer
@@ -301,8 +345,7 @@ impl<'a> Scene<'a> {
             | Content::Video { .. }
             | Content::Text(_) => {
                 let source = self.source(layer, path, span)?;
-                let grown = effects::apply(source.image, &layer.effects, t, self.limits.max_pixels)
-                    .map_err(too_large(path))?;
+                let grown = effects::apply(source.image, &layer.effects, t, self.limits, path)?;
                 // Source pixels to the layer box; text ink and effect growth extend past the box.
                 let to_canvas = outer
                     .then_after(own(source.box_w, source.box_h))
@@ -428,14 +471,14 @@ impl<'a> Scene<'a> {
             }
             Content::Text(text) => {
                 let data = self.font(&text.font)?;
-                let drawn =
-                    text::draw(text, &data, self.limits.max_pixels).map_err(|e| match e {
-                        TextError::Font(message) => RenderError::Decode {
-                            asset: format!("font {:?}", text.font),
-                            message,
-                        },
-                        TextError::TooLarge(e) => too_large(path)(e),
-                    })?;
+                let drawn = text::draw(text, &data, self.limits).map_err(|e| match e {
+                    TextError::Font(message) => RenderError::Decode {
+                        asset: format!("font {:?}", text.font),
+                        message,
+                    },
+                    TextError::TooLarge(e) => too_large(path)(e),
+                    TextError::TimedOut { limit_ms } => RenderError::TimedOut { limit_ms },
+                })?;
                 let mut image = drawn.image;
                 if self.cover_text {
                     image.data.fill(1.0);
