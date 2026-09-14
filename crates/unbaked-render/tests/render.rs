@@ -411,7 +411,10 @@ fn oversized_canvases_fail_with_a_clear_limit() {
         &recipe,
         &lookup,
         &NoFonts,
-        RenderLimits { max_pixels: 9_999 },
+        RenderLimits {
+            max_pixels: 9_999,
+            ..RenderLimits::default()
+        },
     )
     .unwrap_err();
     assert_eq!(
@@ -543,4 +546,112 @@ fn text_moves_with_its_transform_and_takes_effects() {
         .filter(|&(x, y)| at(&out, x, y) == [255, 0, 0, 255])
         .count();
     assert!(red > 50, "{red} red pixels");
+}
+
+/// A 16-bit PCM WAV file.
+fn wav(rate: u32, channels: u16, samples: &[i16]) -> Vec<u8> {
+    let data_len = (samples.len() * 2) as u32;
+    let mut out = b"RIFF".to_vec();
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * u32::from(channels) * 2).to_le_bytes());
+    out.extend_from_slice(&(channels * 2).to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    for s in samples {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    out
+}
+
+fn tone(freq: f64, rate: u32, n: usize, amp: f64) -> Vec<f32> {
+    (0..n)
+        .map(|i| {
+            (amp * (2.0 * std::f64::consts::PI * freq * i as f64 / f64::from(rate)).sin()) as f32
+        })
+        .collect()
+}
+
+fn rms(s: &[f32]) -> f32 {
+    (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt()
+}
+
+#[test]
+fn audio_recipes_render_a_fresh_m4a() {
+    use unbaked_render::sound::{Pcm, decode, encode_m4a};
+    // A mono 1 kHz WAV at 44.1 kHz, and a stereo 300 Hz M4A made by our own encoder.
+    let beep: Vec<i16> = tone(1000.0, 44100, 22050, 0.5)
+        .iter()
+        .map(|s| (s * 32767.0) as i16)
+        .collect();
+    let hum = encode_m4a(&Pcm {
+        rate: 48000,
+        channels: vec![
+            tone(300.0, 48000, 48000, 0.4),
+            tone(300.0, 48000, 48000, 0.4),
+        ],
+    })
+    .unwrap();
+    let recipe = r#"{"unbaked": 0, "output": {"kind": "audio", "duration_ms": 1000, "sample_rate": 48000, "channels": 2},
+        "assets": {"beep": {"path": "assets/beep.wav"}, "hum": {"path": "assets/hum.m4a"}},
+        "audio": [
+            {"id": "b", "asset": "beep", "start_ms": 500},
+            {"id": "h", "asset": "hum", "duration_ms": 250, "gain_db": -6},
+            {"id": "m", "asset": "hum", "muted": true}
+        ]}"#;
+    let files: pack::Files = [
+        ("recipe.json", recipe.as_bytes().to_vec()),
+        ("assets/beep.wav", wav(44100, 1, &beep)),
+        ("assets/hum.m4a", hum),
+    ]
+    .into_iter()
+    .map(|(n, d)| (n.to_owned(), d))
+    .collect();
+
+    let file = render(&files, &NoFonts, RenderLimits::default()).unwrap();
+    assert_eq!(
+        file,
+        render(&files, &NoFonts, RenderLimits::default()).unwrap()
+    );
+    assert_eq!(
+        open(&file, Limits::default()).unwrap().check(),
+        Status::Fresh
+    );
+
+    let out = decode(&file, 1_000_000).unwrap();
+    assert_eq!((out.rate, out.channels.len(), out.len()), (48000, 2, 48000));
+    let left = &out.channels[0];
+    // 0–250 ms: the hum at -6 dB (0.4 × 0.5 amplitude). 250–500 ms: silence. 500 ms on: the beep.
+    let hum_level = rms(&left[2_400..9_600]);
+    assert!((hum_level - 0.2 / 2f32.sqrt()).abs() < 0.02, "{hum_level}");
+    assert!(rms(&left[13_200..22_800]) < 0.01);
+    let beep_level = rms(&left[26_400..45_600]);
+    assert!(
+        (beep_level - 0.5 / 2f32.sqrt()).abs() < 0.03,
+        "{beep_level}"
+    );
+    assert_eq!(
+        out.channels[0], out.channels[1],
+        "mono sources copy to both sides"
+    );
+
+    // Too long for the limit: a clear error, not an allocation.
+    let err = render(
+        &files,
+        &NoFonts,
+        RenderLimits {
+            max_samples: 1000,
+            ..RenderLimits::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "the sound needs 48000 samples per channel, more than the limit of 1000"
+    );
 }

@@ -658,9 +658,18 @@ animatable; `color` is not.
 3. Channels are mapped: mono to stereo copies the channel; stereo to mono averages the two. Sources with more than 2 channels are rejected in version 0.
 4. Gain `10^(gain_db / 20)` is applied per sample, with `gain_db` evaluated at the sample's local time `1000·k / sample_rate − start_ms`.
 5. Fades are linear in amplitude. Fade-in scales by `t / fade_in_ms` over the first `fade_in_ms`. Fade-out mirrors it at the end.
-6. Output sample `k` has time `k / sample_rate` s. A clip contributes to sample `k` when `start_ms ≤ 1000·k / sample_rate < start_ms + duration_ms`.
+6. Output sample `k` has time `k / sample_rate` s, and there are `ceil(duration_ms × sample_rate / 1000)` samples. A clip contributes to sample `k` when `start_ms ≤ 1000·k / sample_rate < start_ms + duration_ms`. With integers: `start_ms × sample_rate ≤ 1000·k < (start_ms + duration_ms) × sample_rate`.
+   - Without `duration_ms`, the clip runs to the end of its source. Its length for the fade-out is the source length in ms minus `trim_start_ms`.
+   - Output sample `k` takes resampled source sample `k + floor((trim_start_ms − start_ms) × sample_rate / 1000)`. Outside the source, that sample is silence.
 7. All clips are summed, then hard-clipped to −1–1.
-8. The result is encoded AAC-LC. Encoder settings are not specified.
+8. The result is encoded AAC-LC. Encoder settings are not specified. Writers MUST hide the encoder's start-up delay with an edit list, so the first presented sample is output sample 0 and the presented length is exactly the number of output samples.
+
+**MP4 sources.** The sound of an MP4 or M4A asset is its first `soun` track, placed on a timeline by the track's edit list:
+- an empty edit adds silence for its duration;
+- a media edit plays the decoded track from its `media_time`, for its duration;
+- a track without an edit list starts at media time 0.
+
+Media times convert to samples as `floor(time × sample_rate / timescale)`. Edits with a rate other than 1 and fragmented MP4 files are not supported in version 0.
 
 The resampling filter is not specified in version 0. Section 8 allows for the
 difference.

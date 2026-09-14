@@ -11,7 +11,9 @@ pub mod draw;
 pub mod effects;
 pub mod image;
 pub mod motion;
+pub mod mp4;
 pub mod scene;
+pub mod sound;
 pub mod text;
 pub mod timing;
 
@@ -41,6 +43,12 @@ pub enum RenderError {
     TooLarge {
         what: String,
         pixels: u64,
+        limit: u64,
+    },
+    /// A sound buffer would pass [`RenderLimits::max_samples`].
+    TooLong {
+        what: String,
+        samples: u64,
         limit: u64,
     },
     /// The result could not be packaged.
@@ -74,6 +82,14 @@ impl fmt::Display for RenderError {
             } => write!(
                 f,
                 "{what} needs {pixels} pixels, more than the limit of {limit}"
+            ),
+            RenderError::TooLong {
+                what,
+                samples,
+                limit,
+            } => write!(
+                f,
+                "{what} needs {samples} samples per channel, more than the limit of {limit}"
             ),
             RenderError::Package(e) => write!(f, "{e}"),
             RenderError::Encode(e) => write!(f, "could not encode the render: {e}"),
@@ -124,16 +140,23 @@ pub fn render(
     if !problems.is_empty() {
         return Err(RenderError::Recipe(problems));
     }
-    if recipe.output.kind != OutputKind::Image {
-        return Err(RenderError::Unsupported(
-            "audio and video output are not rendered yet".into(),
-        ));
-    }
-
     let file = |path: &str| files.get(path).map(Vec::as_slice);
-    let pixels = scene::render_still(&recipe, &file, fonts, limits)?;
-    let png = image::encode_png(pixels.width, pixels.height, &pixels.to_rgba8())
-        .map_err(RenderError::Encode)?;
+    let carrier = match recipe.output.kind {
+        OutputKind::Image => {
+            let pixels = scene::render_still(&recipe, &file, fonts, limits)?;
+            image::encode_png(pixels.width, pixels.height, &pixels.to_rgba8())
+                .map_err(RenderError::Encode)?
+        }
+        OutputKind::Audio => {
+            let pcm = sound::mix(&recipe, &file, limits.max_samples)?;
+            sound::encode_m4a(&pcm).map_err(RenderError::Encode)?
+        }
+        OutputKind::Video => {
+            return Err(RenderError::Unsupported(
+                "video output is not rendered yet".into(),
+            ));
+        }
+    };
 
     let assets: serde_json::Map<String, serde_json::Value> = bake::referenced_files(&recipe)
         .into_iter()
@@ -144,12 +167,12 @@ pub fn render(
         "renderer": RENDERER,
         "recipe_sha256": sha256_hex(recipe_json),
         "assets_sha256": assets,
-        "render_sha256": sha256_hex(&png),
+        "render_sha256": sha256_hex(&carrier),
     });
     let mut packed = files.clone();
     let mut bake_bytes = serde_json::to_vec_pretty(&bake_json).expect("JSON values serialise");
     bake_bytes.push(b'\n');
     packed.insert("bake.json".into(), bake_bytes);
     let package = pack::write(&packed, Limits::default()).map_err(RenderError::Package)?;
-    pack::with_package(&png, &package).map_err(|e| RenderError::Encode(e.to_string()))
+    pack::with_package(&carrier, &package).map_err(|e| RenderError::Encode(e.to_string()))
 }
