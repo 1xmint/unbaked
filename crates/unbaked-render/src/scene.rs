@@ -1,9 +1,8 @@
 //! Drawing a recipe's layers at one moment (SPEC.md sections 4.5, 4.6, 4.10,
 //! 4.11 and 5.4).
 //!
-//! Solid, image, text and group layers are drawn, with masks, effects,
-//! transforms, opacity, blend modes, keyframes and transitions. Video layers
-//! are refused with [`RenderError::Unsupported`] until they are built.
+//! Solid, image, video, text and group layers are drawn, with masks, effects,
+//! transforms, opacity, blend modes, keyframes and transitions.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -19,6 +18,7 @@ use crate::image::{Pixmap, TooLarge, decode_jpeg, decode_png, premultiply};
 use crate::motion::{transitions, value_at};
 use crate::text::{self, TextError};
 use crate::timing::{Moment, Span};
+use crate::video::Video;
 use crate::{FontSource, RenderError};
 
 /// Limits a render stays within.
@@ -54,6 +54,7 @@ struct Scene<'a> {
     fonts: &'a dyn FontSource,
     decoded: HashMap<&'a str, Pixmap>,
     font_files: HashMap<&'a str, Rc<[u8]>>,
+    videos: HashMap<&'a str, Video<'a>>,
     moment: Moment,
     width: u32,
     height: u32,
@@ -85,6 +86,7 @@ pub fn render_still<'a>(
         fonts,
         decoded: HashMap::new(),
         font_files: HashMap::new(),
+        videos: HashMap::new(),
         moment: Moment::AtMs(output.at_ms),
         width,
         height,
@@ -168,12 +170,6 @@ impl<'a> Scene<'a> {
         if layer.hidden || !span.visible_at(self.moment) {
             return Ok(());
         }
-        let unsupported = |what: &str| {
-            Err(RenderError::Unsupported(format!(
-                "{path}: {what} are not rendered yet"
-            )))
-        };
-
         let t = span.local_ms(self.moment);
         let moved = transitions(
             layer.transition_in.as_ref(),
@@ -201,7 +197,6 @@ impl<'a> Scene<'a> {
 
         // Steps 1-3 of section 5.4: the layer's pixels, in canvas space.
         let placed = match &layer.content {
-            Content::Video { .. } => return unsupported("video layers"),
             Content::Group { layers } => {
                 // The group box is the canvas; children render into an isolated buffer.
                 let transform =
@@ -216,8 +211,11 @@ impl<'a> Scene<'a> {
                 }
                 buffer
             }
-            Content::Solid { .. } | Content::Image { .. } | Content::Text(_) => {
-                let source = self.source(layer, path)?;
+            Content::Solid { .. }
+            | Content::Image { .. }
+            | Content::Video { .. }
+            | Content::Text(_) => {
+                let source = self.source(layer, path, span)?;
                 let grown = effects::apply(source.image, &layer.effects, t, self.limits.max_pixels)
                     .map_err(too_large(path))?;
                 // Source pixels to the layer box; text ink and effect growth extend past the box.
@@ -304,7 +302,7 @@ impl<'a> Scene<'a> {
     }
 
     /// A solid's, image's or text's source image and layer box (section 4.6).
-    fn source(&mut self, layer: &'a Layer, path: &str) -> Result<Source, RenderError> {
+    fn source(&mut self, layer: &'a Layer, path: &str, span: Span) -> Result<Source, RenderError> {
         match &layer.content {
             Content::Solid {
                 color,
@@ -324,14 +322,24 @@ impl<'a> Scene<'a> {
                 height,
             } => {
                 let image = self.image(asset)?;
-                let (iw, ih) = (f64::from(image.width), f64::from(image.height));
-                let (bw, bh) = match (width, height) {
-                    (Some(w), Some(h)) => (*w, *h),
-                    (Some(w), None) => (*w, w * ih / iw),
-                    (None, Some(h)) => (h * iw / ih, *h),
-                    (None, None) => (iw, ih),
-                };
+                let (bw, bh) = fit(image, *width, *height);
                 Ok(Source::stretched(image.clone(), bw, bh))
+            }
+            Content::Video {
+                asset,
+                width,
+                height,
+                trim_start_ms,
+            } => {
+                // Section 5.2: the source time is the local time plus the trim.
+                let (num, den) = span.local_fraction(self.moment, *trim_start_ms);
+                let frame = self.video(asset)?.frame_at(num, den);
+                let frame = frame.map_err(|message| RenderError::Decode {
+                    asset: self.asset_path(asset),
+                    message,
+                })?;
+                let (bw, bh) = fit(&frame, *width, *height);
+                Ok(Source::stretched(frame, bw, bh))
             }
             Content::Text(text) => {
                 let data = self.font(&text.font)?;
@@ -402,5 +410,44 @@ impl<'a> Scene<'a> {
             self.decoded.insert(id, decoded);
         }
         Ok(&self.decoded[id])
+    }
+
+    /// A video asset, opened once and kept so frames decode onward.
+    fn video(&mut self, id: &'a str) -> Result<&mut Video<'a>, RenderError> {
+        if !self.videos.contains_key(id) {
+            let missing = || RenderError::Unsupported(format!("asset {id:?} is missing"));
+            let asset = self.recipe.assets.get(id).ok_or_else(missing)?;
+            let AssetSource::Path(path) = &asset.source else {
+                return Err(missing());
+            };
+            let bytes = (self.file)(path).ok_or_else(missing)?;
+            let video = Video::open(bytes, self.limits.max_samples, self.limits.max_pixels)
+                .map_err(|message| RenderError::Decode {
+                    asset: path.clone(),
+                    message,
+                })?;
+            self.videos.insert(id, video);
+        }
+        Ok(self.videos.get_mut(id).expect("inserted above"))
+    }
+
+    /// The package path of asset `id`, for error messages.
+    fn asset_path(&self, id: &str) -> String {
+        match self.recipe.assets.get(id).map(|a| &a.source) {
+            Some(AssetSource::Path(path)) => path.clone(),
+            _ => id.to_owned(),
+        }
+    }
+}
+
+/// A layer box for a picture of the given size (section 4.6): both sides as
+/// given, one side with the other following the aspect ratio, or the picture's own.
+fn fit(image: &Pixmap, width: Option<f64>, height: Option<f64>) -> (f64, f64) {
+    let (iw, ih) = (f64::from(image.width), f64::from(image.height));
+    match (width, height) {
+        (Some(w), Some(h)) => (w, h),
+        (Some(w), None) => (w, w * ih / iw),
+        (None, Some(h)) => (h * iw / ih, h),
+        (None, None) => (iw, ih),
     }
 }

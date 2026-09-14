@@ -1,11 +1,9 @@
 //! Video frames from MP4 assets (SPEC.md section 5.2): H.264 decoding with
 //! OpenH264, frame lookup by presentation time, and YUV to RGB conversion.
 
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
-
 use openh264::decoder::Decoder;
 use openh264::formats::YUVSource;
+use openh264_sys2::SBufferInfo;
 
 use crate::image::{Pixmap, orient};
 use crate::mp4;
@@ -136,7 +134,10 @@ pub fn parse_sps(nal: &[u8]) -> Result<SpsInfo, String> {
     let profile = r.bits(8)?;
     r.bits(16)?;
     r.ue()?;
-    if matches!(profile, 100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135) {
+    if matches!(
+        profile,
+        100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
+    ) {
         let chroma_format = r.ue()?;
         if chroma_format == 3 {
             r.bit()?;
@@ -227,16 +228,26 @@ pub struct Video<'a> {
     order: Vec<usize>,
     max_pixels: u64,
     state: Option<Decoding>,
+    /// The latest frame handed out: its sample index and pixels.
+    last: Option<(usize, Pixmap)>,
 }
+
+/// Most decoded pictures kept waiting for their turn. H.264 never holds more
+/// than 16 in its picture buffer.
+const MAX_PENDING: usize = 16;
 
 struct Decoding {
     decoder: Decoder,
     /// The next sample to feed, in decode order.
     next: usize,
-    /// Composition times of fed samples not yet output.
-    waiting: BinaryHeap<Reverse<i64>>,
-    /// The latest output frame: its composition time and pixels.
-    last: Option<(i64, Pixmap)>,
+    /// Whether the end of the stream has been signalled.
+    ended: bool,
+    /// Pictures that came out before they were asked for, by sample index.
+    pending: Vec<(usize, OwnedYuv)>,
+    /// Samples whose pictures came out and were let go.
+    dropped: Vec<bool>,
+    /// The latest error OpenH264 reported.
+    error: Option<i32>,
 }
 
 impl<'a> Video<'a> {
@@ -288,19 +299,17 @@ impl<'a> Video<'a> {
             return Err("interlaced video is not supported".into());
         }
         let (w, h) = entry_size(&track.entry.body);
-        let color = ColorSpace::from_matrix(sps.matrix, sps.full_range).unwrap_or(
-            if h >= 720 {
-                ColorSpace {
-                    full_range: sps.full_range,
-                    ..ColorSpace::BT709
-                }
-            } else {
-                ColorSpace {
-                    full_range: sps.full_range,
-                    ..ColorSpace::BT601
-                }
-            },
-        );
+        let color = ColorSpace::from_matrix(sps.matrix, sps.full_range).unwrap_or(if h >= 720 {
+            ColorSpace {
+                full_range: sps.full_range,
+                ..ColorSpace::BT709
+            }
+        } else {
+            ColorSpace {
+                full_range: sps.full_range,
+                ..ColorSpace::BT601
+            }
+        });
         if u64::from(w) * u64::from(h) > max_pixels {
             return Err(format!("the video is {w}×{h}, more than the pixel limit"));
         }
@@ -316,6 +325,7 @@ impl<'a> Video<'a> {
             order,
             max_pixels,
             state: None,
+            last: None,
         })
     }
 
@@ -330,9 +340,11 @@ impl<'a> Video<'a> {
             .order
             .partition_point(|&i| i128::from(composition(&samples[i])) * m_den <= m_num);
         let target = self.order[pos.saturating_sub(1)];
-        let target_time = composition(&samples[target]);
-        self.decode_to(target, target_time)?;
-        let (_, image) = self.state.as_ref().and_then(|s| s.last.as_ref()).ok_or("no frame decoded")?;
+        if self.last.as_ref().is_none_or(|(i, _)| *i != target) {
+            let yuv = self.decode(target)?;
+            self.last = Some((target, to_pixmap(&yuv, self.color, self.max_pixels)?));
+        }
+        let (_, image) = self.last.as_ref().expect("set above");
         Ok(match self.track.rotation {
             90 => orient(image, 6),
             180 => orient(image, 3),
@@ -364,91 +376,215 @@ impl<'a> Video<'a> {
                     return (media_start, 1);
                 }
                 let end = length * offset_den;
-                let clamped = if length > 0 { offset_num.min(end) } else { offset_num };
+                let clamped = if length > 0 {
+                    offset_num.min(end)
+                } else {
+                    offset_num
+                };
                 if length == 0 || offset_num < end {
                     // media = media_start + offset·scale/movie
-                    return (media_start * offset_den * movie + clamped * scale, offset_den * movie);
+                    return (
+                        media_start * offset_den * movie + clamped * scale,
+                        offset_den * movie,
+                    );
                 }
-                last_media = Some((media_start * offset_den * movie + end * scale, offset_den * movie));
+                last_media = Some((
+                    media_start * offset_den * movie + end * scale,
+                    offset_den * movie,
+                ));
             }
             start += length;
         }
         last_media.unwrap_or((0, 1))
     }
 
-    fn decode_to(&mut self, target: usize, target_time: i64) -> Result<(), String> {
+    /// The key frame to start decoding from to reach `target`.
+    fn start_for(&self, target: usize) -> usize {
         let samples = &self.track.samples;
-        let ready = self.state.as_ref().is_some_and(|s| {
-            s.last.as_ref().is_some_and(|(t, _)| *t == target_time)
-                || (s.next <= target
-                    && s.last.as_ref().is_none_or(|(t, _)| *t < target_time)
-                    && !samples[s.next..=target].iter().skip(1).any(|x| x.sync))
+        let start = samples[..=target].iter().rposition(|s| s.sync).unwrap_or(0);
+        if composition(&samples[start]) > composition(&samples[target]) {
+            // An open group of pictures: the target is shown before its key
+            // frame and may refer back to the group before.
+            samples[..start].iter().rposition(|s| s.sync).unwrap_or(0)
+        } else {
+            start
+        }
+    }
+
+    /// Decodes the picture of sample `target`. Pictures come out of OpenH264
+    /// in its own order; each carries the tag it was fed with, so the order
+    /// never decides which picture is which.
+    fn decode(&mut self, target: usize) -> Result<OwnedYuv, String> {
+        let samples = &self.track.samples;
+        let start = self.start_for(target);
+        let reuse = self.state.as_ref().is_some_and(|s| {
+            s.pending.iter().any(|(i, _)| *i == target) || (!s.dropped[target] && start <= s.next)
         });
-        if !ready {
-            let mut start = samples[..=target].iter().rposition(|s| s.sync).unwrap_or(0);
-            if composition(&samples[start]) > target_time {
-                start = samples[..start].iter().rposition(|s| s.sync).unwrap_or(0);
-            }
+        if !reuse {
+            let mut decoder = Decoder::new().map_err(|e| e.to_string())?;
+            // An empty feed would signal the end of the stream.
+            let error = if self.headers.is_empty() {
+                None
+            } else {
+                feed(&mut decoder, Some(&self.headers), 0)?.0
+            };
             self.state = Some(Decoding {
-                decoder: Decoder::new().map_err(|e| e.to_string())?,
+                decoder,
                 next: start,
-                waiting: BinaryHeap::new(),
-                last: None,
+                ended: false,
+                pending: Vec::new(),
+                dropped: vec![false; samples.len()],
+                error,
             });
         }
         let state = self.state.as_mut().expect("set above");
-        if state.last.as_ref().is_some_and(|(t, _)| *t == target_time) {
-            return Ok(());
-        }
-        let color = self.color;
-        let max_pixels = self.max_pixels;
-        let keep = |state: &mut Decoding, yuv: &dyn YUVSource| -> Result<bool, String> {
-            let Some(Reverse(time)) = state.waiting.pop() else {
-                return Ok(false);
+        let time = composition(&samples[target]);
+        loop {
+            if let Some(at) = state.pending.iter().position(|(i, _)| *i == target) {
+                let (_, yuv) = state.pending.swap_remove(at);
+                state.dropped[target] = true;
+                return Ok(yuv);
+            }
+            let (error, picture) = if state.next < samples.len() {
+                let mut stream = Vec::new();
+                for nal in nal_units(
+                    self.track.sample_data(self.file, &samples[state.next])?,
+                    self.nal_length,
+                )? {
+                    stream.extend_from_slice(&[0, 0, 0, 1]);
+                    stream.extend_from_slice(nal);
+                }
+                state.next += 1;
+                feed(&mut state.decoder, Some(&stream), state.next as u64)?
+            } else if !state.ended {
+                state.ended = true;
+                feed(&mut state.decoder, None, 0)?
+            } else {
+                match flush(&mut state.decoder) {
+                    Some(picture) => (None, Some(picture)),
+                    None => {
+                        let why = state
+                            .error
+                            .map_or(String::new(), |code| format!(" (OpenH264 error {code:#x})"));
+                        return Err(format!("frame {target} could not be decoded{why}"));
+                    }
+                }
             };
-            if time <= target_time {
-                state.last = Some((time, to_pixmap(yuv, color, max_pixels)?));
-            }
-            Ok(time >= target_time)
-        };
-        while state.next < samples.len() {
-            let sample = &samples[state.next];
-            let mut stream = Vec::new();
-            if state.waiting.is_empty() && state.last.is_none() {
-                stream.extend_from_slice(&self.headers);
-            }
-            for nal in nal_units(self.track.sample_data(self.file, sample)?, self.nal_length)? {
-                stream.extend_from_slice(&[0, 0, 0, 1]);
-                stream.extend_from_slice(nal);
-            }
-            state.next += 1;
-            state.waiting.push(Reverse(composition(sample)));
-            let decoded = state.decoder.decode(&stream).map_err(|e| e.to_string())?;
-            if let Some(yuv) = decoded {
-                let yuv = OwnedYuv::from(&yuv);
-                if keep(state, &yuv)? {
-                    return Ok(());
+            state.error = error.or(state.error);
+            // Tags are sample index + 1; 0 marks the parameter sets.
+            let Some((index, yuv)) = picture.and_then(|(tag, yuv)| {
+                let index = usize::try_from(tag).ok()?.checked_sub(1)?;
+                (index < samples.len()).then_some((index, yuv))
+            }) else {
+                continue;
+            };
+            state.dropped[index] = true;
+            // Pictures shown before the target are not needed going forward.
+            if composition(&samples[index]) >= time
+                && !state.pending.iter().any(|(i, _)| *i == index)
+            {
+                state.dropped[index] = false;
+                state.pending.push((index, yuv));
+                if state.pending.len() > MAX_PENDING {
+                    let (at, _) = state
+                        .pending
+                        .iter()
+                        .enumerate()
+                        .max_by_key(|(_, (i, _))| composition(&samples[*i]))
+                        .expect("not empty");
+                    let (i, _) = state.pending.swap_remove(at);
+                    state.dropped[i] = true;
                 }
             }
         }
-        let rest: Vec<OwnedYuv> = state
-            .decoder
-            .flush_remaining()
-            .map_err(|e| e.to_string())?
-            .iter()
-            .map(OwnedYuv::from)
-            .collect();
-        for yuv in rest {
-            if keep(state, &yuv)? {
-                return Ok(());
-            }
-        }
-        if state.last.is_none() {
-            return Err("the decoder produced no frame".into());
-        }
-        Ok(())
     }
 }
+
+/// Feeds one access unit to OpenH264 tagged with `tag`, or `None` to mark the
+/// end of the stream. Returns the error code, if any, and the picture that
+/// came out with its tag.
+#[allow(unsafe_code)]
+fn feed(
+    decoder: &mut Decoder,
+    stream: Option<&[u8]>,
+    tag: u64,
+) -> Result<(Option<i32>, Option<Tagged>), String> {
+    let (data, len) = match stream {
+        Some(s) => (
+            s.as_ptr(),
+            i32::try_from(s.len()).map_err(|_| "a video frame is too large")?,
+        ),
+        None => (std::ptr::null(), 0),
+    };
+    let mut info = SBufferInfo {
+        uiInBsTimeStamp: tag,
+        ..SBufferInfo::default()
+    };
+    let mut dst = [std::ptr::null_mut::<u8>(); 3];
+    // SAFETY: `data` points to `len` readable bytes or is null with length 0,
+    // which OpenH264 takes as end of stream; `dst` and `info` are live locals.
+    let state = unsafe {
+        decoder
+            .raw_api()
+            .decode_frame2(data, len, dst.as_mut_ptr(), &raw mut info)
+    };
+    Ok(((state != 0).then_some(state), picture(&info)))
+}
+
+/// Takes the next buffered picture after the end of the stream.
+#[allow(unsafe_code)]
+fn flush(decoder: &mut Decoder) -> Option<Tagged> {
+    let mut info = SBufferInfo::default();
+    let mut dst = [std::ptr::null_mut::<u8>(); 3];
+    // SAFETY: `dst` and `info` are live locals.
+    unsafe {
+        decoder
+            .raw_api()
+            .flush_frame(dst.as_mut_ptr(), &raw mut info)
+    };
+    picture(&info)
+}
+
+/// Copies the picture OpenH264 reported in `info`, if there is one.
+#[allow(unsafe_code)]
+fn picture(info: &SBufferInfo) -> Option<Tagged> {
+    if info.iBufferStatus != 1 || info.pDst.iter().any(|p| p.is_null()) {
+        return None;
+    }
+    // SAFETY: with a picture ready, OpenH264 fills the system buffer description.
+    let buffer = unsafe { info.UsrData.sSystemBuffer };
+    let size = |v: i32| usize::try_from(v).ok().filter(|&v| v > 0);
+    let (width, height) = (size(buffer.iWidth)?, size(buffer.iHeight)?);
+    let (luma, chroma) = (size(buffer.iStride[0])?, size(buffer.iStride[1])?);
+    if luma < width || chroma < width.div_ceil(2) {
+        return None;
+    }
+    let rows = height.div_ceil(2);
+    // SAFETY: the planes stay valid until the next call into the decoder, and
+    // are at least stride × rows long (OpenH264 also pads them). Each is
+    // copied before returning.
+    let (y, u, v) = unsafe {
+        (
+            std::slice::from_raw_parts(info.pDst[0], luma * height).to_vec(),
+            std::slice::from_raw_parts(info.pDst[1], chroma * rows).to_vec(),
+            std::slice::from_raw_parts(info.pDst[2], chroma * rows).to_vec(),
+        )
+    };
+    Some((
+        info.uiOutYuvTimeStamp,
+        OwnedYuv {
+            width,
+            height,
+            strides: (luma, chroma, chroma),
+            y,
+            u,
+            v,
+        },
+    ))
+}
+
+/// A picture and the tag it was fed with.
+type Tagged = (u64, OwnedYuv);
 
 /// A decoded picture copied out of the decoder, so the decoder can be used again.
 struct OwnedYuv {
@@ -458,20 +594,6 @@ struct OwnedYuv {
     y: Vec<u8>,
     u: Vec<u8>,
     v: Vec<u8>,
-}
-
-impl From<&openh264::decoder::DecodedYUV<'_>> for OwnedYuv {
-    fn from(yuv: &openh264::decoder::DecodedYUV<'_>) -> Self {
-        let (width, height) = yuv.dimensions();
-        OwnedYuv {
-            width,
-            height,
-            strides: yuv.strides(),
-            y: yuv.y().to_vec(),
-            u: yuv.u().to_vec(),
-            v: yuv.v().to_vec(),
-        }
-    }
 }
 
 impl YUVSource for OwnedYuv {
@@ -503,7 +625,10 @@ fn composition(sample: &mp4::Sample) -> i64 {
 
 /// Width and height from a visual sample entry.
 fn entry_size(body: &[u8]) -> (u32, u32) {
-    let read = |at: usize| body.get(at..at + 2).map_or(0, |b| u32::from(u16::from_be_bytes([b[0], b[1]])));
+    let read = |at: usize| {
+        body.get(at..at + 2)
+            .map_or(0, |b| u32::from(u16::from_be_bytes([b[0], b[1]])))
+    };
     (read(24), read(26))
 }
 
@@ -538,7 +663,11 @@ fn nal_units(sample: &[u8], length_size: usize) -> Result<Vec<&[u8]>, String> {
             .iter()
             .fold(0usize, |acc, &b| (acc << 8) | usize::from(b));
         pos += length_size;
-        out.push(sample.get(pos..pos + len).ok_or("a NAL unit runs past the sample")?);
+        out.push(
+            sample
+                .get(pos..pos + len)
+                .ok_or("a NAL unit runs past the sample")?,
+        );
         pos += len;
     }
     Ok(out)
@@ -549,8 +678,12 @@ fn nal_units(sample: &[u8], length_size: usize) -> Result<Vec<&[u8]>, String> {
 fn to_pixmap(yuv: &dyn YUVSource, color: ColorSpace, max_pixels: u64) -> Result<Pixmap, String> {
     let (w, h) = yuv.dimensions();
     let (sy, su, sv) = yuv.strides();
-    let mut image = Pixmap::filled(w as u32, h as u32, [0.0; 4], max_pixels)
-        .map_err(|e| format!("a {w}×{h} frame needs {} pixels, more than {}", e.pixels, e.limit))?;
+    let mut image = Pixmap::filled(w as u32, h as u32, [0.0; 4], max_pixels).map_err(|e| {
+        format!(
+            "a {w}×{h} frame needs {} pixels, more than {}",
+            e.pixels, e.limit
+        )
+    })?;
     let (ys, us, vs) = (yuv.y(), yuv.u(), yuv.v());
     for row in 0..h {
         for col in 0..w {
@@ -579,20 +712,49 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "work in progress: OpenH264 returns frames in decode order and fails on samples 9 and 10"]
     fn high_profile_frames_come_out_in_presentation_order() {
         let mut video = Video::open(CLIP, 1000, 1_000_000).unwrap();
-        assert_eq!(video.track.samples.len(), 12);
-        assert!(video.track.samples.iter().any(|s| s.composition_offset != 0), "has B-frames");
-        let step = 1000 / 10;
+        // VLC's x264 encode: 11 frames at 90 kHz, frame 0 encoded twice and
+        // nothing shown at 100 ms. B-frames make decode order differ from
+        // presentation order.
+        assert_eq!(video.track.samples.len(), 11);
+        assert_eq!(video.order, [0, 2, 3, 1, 5, 4, 6, 7, 8, 9, 10]);
         let first = video.frame_at(0, 1).unwrap();
         assert_eq!((first.width, first.height), (96, 64));
-        let shown: Vec<usize> = (0..12).map(|n| marker(&video.frame_at(n * step + 50, 1).unwrap())).collect();
-        assert_eq!(shown, (0..12).collect::<Vec<_>>());
-        // Backwards and across key frames.
-        assert_eq!(marker(&video.frame_at(250, 1).unwrap()), 2);
-        assert_eq!(marker(&video.frame_at(1150, 1).unwrap()), 11);
-        assert_eq!(marker(&video.frame_at(99_999, 1).unwrap()), 11, "the last frame is held");
+        let shown: Vec<usize> = (0..12)
+            .map(|n| marker(&video.frame_at(n * 100 + 50, 1).unwrap()))
+            .collect();
+        assert_eq!(shown, [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        // Backwards, then across the key frame at sample 6, then back again.
+        assert_eq!(marker(&video.frame_at(450, 1).unwrap()), 2);
+        assert_eq!(marker(&video.frame_at(750, 1).unwrap()), 5);
+        assert_eq!(marker(&video.frame_at(650, 1).unwrap()), 4);
+        assert_eq!(marker(&video.frame_at(1, 3).unwrap()), 0);
+        assert_eq!(
+            marker(&video.frame_at(99_999, 1).unwrap()),
+            9,
+            "the last frame is held"
+        );
+    }
+
+    #[test]
+    fn damaged_frames_are_an_error_not_a_panic() {
+        let mut clip = CLIP.to_vec();
+        let video = Video::open(CLIP, 1000, 1_000_000).unwrap();
+        let sample = &video.track.samples[3];
+        let start = sample.offset as usize;
+        for byte in &mut clip[start + 8..start + sample.size as usize] {
+            *byte = 0xFF;
+        }
+        let mut video = Video::open(&clip, 1000, 1_000_000).unwrap();
+        for n in 0..12 {
+            let _ = video.frame_at(n * 100 + 50, 1);
+        }
+        assert_eq!(
+            marker(&video.frame_at(50, 1).unwrap()),
+            0,
+            "frames before the damage still decode"
+        );
     }
 
     #[test]
@@ -602,7 +764,10 @@ mod tests {
         assert_eq!(bt601.rgb(235, 128, 128), [1.0, 1.0, 1.0]);
         let red = bt601.rgb(81, 90, 240);
         assert!(red[0] > 0.99 && red[1] < 0.01 && red[2] < 0.01, "{red:?}");
-        let full = ColorSpace { full_range: true, ..ColorSpace::BT709 };
+        let full = ColorSpace {
+            full_range: true,
+            ..ColorSpace::BT709
+        };
         assert_eq!(full.rgb(255, 128, 128), [1.0, 1.0, 1.0]);
     }
 
@@ -610,33 +775,17 @@ mod tests {
     fn exp_golomb_and_emulation_prevention() {
         // 1 → 0, 010 → 1, 011 → 2, 00100 → 3; then se 00101 → -2.
         let mut r = Bits::new(&[0b1010_0110, 0b0100_0010, 0b1000_0000]);
-        assert_eq!([r.ue().unwrap(), r.ue().unwrap(), r.ue().unwrap(), r.ue().unwrap()], [0, 1, 2, 3]);
+        assert_eq!(
+            [
+                r.ue().unwrap(),
+                r.ue().unwrap(),
+                r.ue().unwrap(),
+                r.ue().unwrap()
+            ],
+            [0, 1, 2, 3]
+        );
         assert_eq!(r.se().unwrap(), -2);
         let r = Bits::new(&[0, 0, 3, 1, 0, 0, 3]);
         assert_eq!(r.data, [0, 0, 1, 0, 0]);
-    }
-
-    /// Logs what the decoder returns for each sample, for debugging.
-    #[test]
-    #[ignore = "diagnostic: run with --ignored --nocapture"]
-    fn zz_probe_order() {
-        let video = Video::open(CLIP, 1000, 1_000_000).unwrap();
-        let mut dec = Decoder::new().unwrap();
-        for (i, sample) in video.track.samples.iter().enumerate() {
-            let mut stream = Vec::new();
-            if i == 0 { stream.extend_from_slice(&video.headers); }
-            let nals = nal_units(video.track.sample_data(CLIP, sample).unwrap(), video.nal_length).unwrap();
-            let types: Vec<u8> = nals.iter().map(|n| n[0] & 0x1F).collect();
-            for nal in nals { stream.extend_from_slice(&[0, 0, 0, 1]); stream.extend_from_slice(nal); }
-            match dec.decode(&stream) {
-                Ok(Some(yuv)) => { let o = OwnedYuv::from(&yuv); eprintln!("feed {i} nal types {types:?} -> out marker {}", marker(&to_pixmap(&o, video.color, 1_000_000).unwrap())); }
-                Ok(None) => eprintln!("feed {i} nal types {types:?} -> none"),
-                Err(e) => eprintln!("feed {i} -> error {e}"),
-            }
-        }
-        for yuv in dec.flush_remaining().unwrap().iter() {
-            let o = OwnedYuv::from(yuv);
-            eprintln!("flush -> marker {}", marker(&to_pixmap(&o, video.color, 1_000_000).unwrap()));
-        }
     }
 }

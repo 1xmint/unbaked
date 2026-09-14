@@ -676,6 +676,7 @@ version = "0.0.0"
 dependencies = [
  "harfrust",
  "openh264",
+ "openh264-sys2",
  "png",
  "rusty_aac",
  "serde_json",

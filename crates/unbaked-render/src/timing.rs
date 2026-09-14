@@ -98,6 +98,23 @@ impl Span {
         }
     }
 
+    /// Local time at `moment` plus `offset_ms`, as the exact fraction
+    /// `num / den` milliseconds. A video layer's source time is its local
+    /// time plus `trim_start_ms`.
+    pub fn local_fraction(self, moment: Moment, offset_ms: u64) -> (i128, i128) {
+        let shift = i128::from(offset_ms) - i128::from(self.start);
+        match moment {
+            Moment::Frame { n, fps } => {
+                let num = i128::from(fps.num);
+                (
+                    1000 * i128::from(n) * i128::from(fps.den) + shift * num,
+                    num,
+                )
+            }
+            Moment::AtMs(ms) => (i128::from(ms) + shift, 1),
+        }
+    }
+
     /// The visible length `E − S`, used by `out` transitions. `None` without an end.
     pub fn length_ms(self) -> Option<u64> {
         self.end.map(|end| end.saturating_sub(self.start))
@@ -150,6 +167,17 @@ mod tests {
         assert!(!layer.visible_at(frame(29, NTSC)));
         assert!(layer.visible_at(frame(30, NTSC)));
         assert!((layer.local_ms(frame(30, NTSC)) - 1.0).abs() < 1e-12);
+        // Exactly 1 ms in, plus a 250 ms trim: 30·1001·1000/30000 − 1000 + 250.
+        assert_eq!(
+            layer.local_fraction(frame(30, NTSC), 250),
+            (1000 * 30 * 1001 - 750 * 30000, 30000)
+        );
+        assert_eq!(
+            Span::scene(None)
+                .child(1000, None)
+                .local_fraction(Moment::AtMs(400), 0),
+            (-600, 1)
+        );
     }
 
     #[test]
