@@ -36,6 +36,7 @@ fn sample_package(path: &str) -> Option<Option<AssetKind>> {
     Some(match ext {
         "png" => Some(AssetKind::Png),
         "jpg" => Some(AssetKind::Jpeg),
+        "webp" => Some(AssetKind::Webp),
         "mp4" | "m4a" => Some(AssetKind::Mp4),
         "wav" => Some(AssetKind::Wav),
         "flac" => Some(AssetKind::Flac),

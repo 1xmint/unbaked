@@ -15,7 +15,7 @@ use unbaked_core::sniff::{self, AssetKind};
 
 use crate::draw::{Affine, composite, place};
 use crate::effects;
-use crate::image::{Pixmap, TooLarge, decode_jpeg, decode_png, premultiply};
+use crate::image::{Pixmap, TooLarge, decode_jpeg, decode_png, decode_webp, premultiply};
 use crate::motion::{transitions, value_at};
 use crate::text::{self, TextError};
 use crate::timing::{Moment, Span};
@@ -533,7 +533,8 @@ impl<'a> Scene<'a> {
             let decoded = match sniff::detect(head) {
                 Some(AssetKind::Png) => decode_png(bytes, self.limits.max_pixels),
                 Some(AssetKind::Jpeg) => decode_jpeg(bytes, self.limits.max_pixels),
-                _ => Err("not a PNG or JPEG image".into()),
+                Some(AssetKind::Webp) => decode_webp(bytes, self.limits.max_pixels),
+                _ => Err("not a PNG, JPEG or WebP image".into()),
             }
             .map_err(|message| RenderError::Decode {
                 asset: path.clone(),

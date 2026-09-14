@@ -229,7 +229,7 @@ Every renderer MUST support at least:
 
 | Kind | Formats |
 |---|---|
-| Image | PNG, JPEG |
+| Image | PNG, JPEG, WebP (still, lossy or lossless) |
 | Video | MP4 containing H.264 |
 | Audio | M4A/MP4 containing AAC-LC, MP3, WAV (PCM 16/24-bit, float 32-bit), FLAC |
 | Font | TrueType (`.ttf`), OpenType (`.otf`) |
@@ -537,7 +537,8 @@ how close "the same" has to be.
 - Samples are converted to floating point 0–1 by dividing by the format's maximum value (255 for 8-bit, 65535 for 16-bit).
 - Compositing happens on these gamma-encoded values, not on linear light. This matches what CSS and most image editors do by default.
 - During rendering, colors are held **premultiplied** (color multiplied by alpha).
-- JPEG images with an EXIF orientation are rotated to their display orientation first.
+- JPEG images with an EXIF orientation are rotated to their display orientation first. Orientation data in PNG and WebP files is ignored.
+- An animated WebP is not a still image: renderers MUST refuse it.
 
 ### 5.2 Video frames
 

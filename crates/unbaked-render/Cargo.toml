@@ -15,6 +15,7 @@ all = { level = "warn", priority = -1 }
 
 [dependencies]
 harfrust = "0.13.3"
+image-webp = "0.2.4"
 openh264 = "0.9.8"
 openh264-sys2 = "0.9.8"
 png = "0.18.1"

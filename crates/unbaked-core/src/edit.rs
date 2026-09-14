@@ -69,6 +69,7 @@ pub fn add_asset(
     let ext = match sniff::detect(head) {
         Some(AssetKind::Png) => "png",
         Some(AssetKind::Jpeg) => "jpg",
+        Some(AssetKind::Webp) => "webp",
         Some(AssetKind::Mp4) => "mp4",
         Some(AssetKind::Mp3) => "mp3",
         Some(AssetKind::Wav) => "wav",
