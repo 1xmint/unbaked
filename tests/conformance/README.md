@@ -36,6 +36,22 @@ The PNG and WAV assets are small generated patterns. `clip.mp4` is
 `tests/video/frames-high.mp4`, and `voice.m4a` was rendered by this renderer
 from a 660 Hz tone.
 
+## Making the cases
+
+`tools/make_cases.py` writes every `package` folder, recipes and assets, and
+a run reproduces the committed files byte for byte. Edit a case there, not by
+hand. It needs only Python 3.
+
+```sh
+python tests/conformance/tools/make_cases.py
+```
+
+`voice.m4a` is kept, not regenerated. `--voice-recipe DIR` writes the recipe it
+was rendered from; render that and pass the result with `--voice`.
+
+`tools/sheet.py OUT SCALE PNG...` stacks PNGs, enlarged, into one image over a
+checkerboard, for looking at expected frames.
+
 ## Updating the references
 
 The test in `crates/unbaked-render/tests/conformance.rs` renders every case
