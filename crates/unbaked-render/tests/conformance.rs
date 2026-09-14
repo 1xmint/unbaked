@@ -4,7 +4,7 @@
 //! `expected/` using section 8's tolerances. `UNBAKED_BLESS=1` rewrites
 //! `expected/` from this renderer instead.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -338,7 +338,9 @@ fn compare_frames(
 fn compare_glyphs(reference: &Value, glyphs: &Value) -> Result<(), String> {
     let layers = |v: &Value| v["layers"].as_object().cloned().unwrap_or_default();
     let (reference, glyphs) = (layers(reference), layers(glyphs));
-    if reference.keys().ne(glyphs.keys()) {
+    let ids =
+        |layers: &serde_json::Map<String, Value>| layers.keys().cloned().collect::<BTreeSet<_>>();
+    if ids(&reference) != ids(&glyphs) {
         return Err("different text layers".into());
     }
     for (id, want) in &reference {
