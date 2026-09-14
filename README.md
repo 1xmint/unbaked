@@ -26,7 +26,8 @@ Files can be checked, unpacked, repacked and rendered. Rendering covers still
 images with solid, image, text and group layers so far: masks, blur, shadow and
 adjust effects, transforms, opacity, blend modes, keyframes and transitions.
 Text is shaped with kerning, ligatures and right-to-left runs, and wraps inside
-its box. Sound and video come next.
+its box. Audio recipes render too: clips from WAV, MP3, FLAC and M4A files
+are mixed and encoded as AAC-LC in an `.unbaked.m4a`. Video comes next.
 
 Fonts a recipe references without packing are looked up by fingerprint in a
 folder you name with `--fonts`. This repository ships no fonts except the one

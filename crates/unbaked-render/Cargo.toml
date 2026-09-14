@@ -13,8 +13,10 @@ workspace = true
 [dependencies]
 harfrust = "0.13.3"
 png = "0.18.1"
+rusty_aac = "0.5.0"
 serde_json = "1.0.151"
 skrifa = "0.46.2"
+symphonia = { version = "0.6.1", default-features = false, features = ["aac", "mp3", "flac", "pcm", "wav", "isomp4", "id3v2"] }
 unbaked-core = { path = "../unbaked-core" }
 unicode-bidi = "0.3.18"
 unicode-linebreak = "0.1.5"

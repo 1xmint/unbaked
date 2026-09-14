@@ -27,13 +27,18 @@ pub struct RenderLimits {
     /// Most pixels in any one buffer: the canvas, a group or mask buffer, a
     /// decoded image, a solid, or an image grown by effects.
     pub max_pixels: u64,
+    /// Most samples per channel in any one sound buffer: a decoded source or
+    /// the mix.
+    pub max_samples: u64,
 }
 
 impl Default for RenderLimits {
-    /// 64 million pixels, about 1 GiB per floating-point buffer.
+    /// 64 million pixels, about 1 GiB per floating-point buffer, and 256
+    /// million samples, 88 minutes of stereo at 48 kHz in about 2 GiB.
     fn default() -> Self {
         RenderLimits {
             max_pixels: 64_000_000,
+            max_samples: 256_000_000,
         }
     }
 }
