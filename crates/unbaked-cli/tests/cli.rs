@@ -369,3 +369,86 @@ fn render_json_reports_results_limits_and_errors() {
     assert_eq!(out.status.code(), Some(4), "{out:?}");
     assert_eq!(json(&out)["error"]["kind"], "usage");
 }
+
+#[test]
+fn edit_then_render_makes_the_file_fresh_again() {
+    let s = Scratch::new("edit");
+    let file = fresh_file(&s.0, RECIPE);
+    let patch = s.0.join("patch.json");
+
+    fs::write(
+        &patch,
+        r#"[{"op": "add", "path": "/layers/0/opacity", "value": 0.5}]"#,
+    )
+    .unwrap();
+    let out = unbaked(&[&"edit", &file, &"--patch", &patch, &"--json"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(json(&out)["ok"], true);
+    let out = unbaked(&[&"check", &file, &"--json"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(json(&out)["changes"][0]["kind"], "recipe");
+    assert_eq!(unbaked(&[&"render", &file]).status.code(), Some(0));
+    assert_eq!(unbaked(&[&"check", &file]).status.code(), Some(0));
+    let recipe = String::from_utf8(unbaked(&[&"recipe", &file]).stdout).unwrap();
+    assert!(recipe.contains("\"opacity\": 0.5"), "{recipe}");
+
+    // A failing operation or an invalid result changes nothing.
+    let before = fs::read(&file).unwrap();
+    fs::write(
+        &patch,
+        r#"[{"op": "test", "path": "/layers/0/id", "value": "other"}]"#,
+    )
+    .unwrap();
+    let out = unbaked(&[&"edit", &file, &"--patch", &patch, &"--json"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let report = json(&out);
+    assert_eq!(report["error"]["problems"][0]["file"], "patch");
+    assert_eq!(report["error"]["problems"][0]["path"], "/0");
+    fs::write(
+        &patch,
+        r#"[{"op": "replace", "path": "/layers/0/asset", "value": "gone"}]"#,
+    )
+    .unwrap();
+    let out = unbaked(&[&"edit", &file, &"--patch", &patch, &"--json"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let problem = &json(&out)["error"]["problems"][0];
+    assert_eq!(
+        (&problem["file"], &problem["path"]),
+        (&"recipe.json".into(), &"/layers/0/asset".into())
+    );
+    assert_eq!(fs::read(&file).unwrap(), before);
+    assert_eq!(unbaked(&[&"edit", &file]).status.code(), Some(4));
+}
+
+#[test]
+fn add_packs_media_into_a_folder_or_file() {
+    let s = Scratch::new("add");
+    let file = fresh_file(&s.0, RECIPE);
+    let folder = s.0.join("unpacked");
+    assert_eq!(unbaked(&[&"unpack", &file, &folder]).status.code(), Some(0));
+    let media = s.0.join("new-logo.png");
+    fs::write(&media, png_pixel([200, 100, 50, 255])).unwrap();
+
+    let out = unbaked(&[&"add", &folder, &media, &"--id", &"logo", &"--json"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(
+        fs::read(folder.join("assets/logo.png")).unwrap(),
+        png_pixel([200, 100, 50, 255])
+    );
+    let out = unbaked(&[&"add", &folder, &media, &"--id", &"bg"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let recipe = fs::read_to_string(folder.join("recipe.json")).unwrap();
+    assert!(recipe.contains("\"path\": \"assets/bg.png\""), "{recipe}");
+
+    let into_file = s.0.join("copy.unbaked.png");
+    let out = unbaked(&[&"add", &file, &media, &"--id", &"extra", &"-o", &into_file]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(unbaked(&[&"check", &into_file]).status.code(), Some(1));
+
+    let text = s.0.join("notes.txt");
+    fs::write(&text, "not media").unwrap();
+    let out = unbaked(&[&"add", &folder, &text, &"--id", &"notes", &"--json"]);
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    assert_eq!(json(&out)["error"]["kind"], "unsupported");
+    assert_eq!(unbaked(&[&"add", &folder, &media]).status.code(), Some(4));
+}
