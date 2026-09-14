@@ -19,6 +19,7 @@ use crate::image::{Pixmap, TooLarge, decode_jpeg, decode_png, decode_webp, premu
 use crate::motion::{transitions, value_at};
 use crate::text::{self, TextError};
 use crate::timing::{Moment, Span};
+#[cfg(feature = "video")]
 use crate::video::Video;
 use crate::{FontSource, RenderError};
 
@@ -102,6 +103,7 @@ struct Scene<'a> {
     fonts: &'a dyn FontSource,
     decoded: HashMap<&'a str, Pixmap>,
     font_files: HashMap<&'a str, Rc<[u8]>>,
+    #[cfg(feature = "video")]
     videos: HashMap<&'a str, Video<'a>>,
     moment: Moment,
     width: u32,
@@ -153,6 +155,7 @@ impl<'a> Frames<'a> {
                 fonts,
                 decoded: HashMap::new(),
                 font_files: HashMap::new(),
+                #[cfg(feature = "video")]
                 videos: HashMap::new(),
                 moment: Moment::AtMs(output.at_ms),
                 width,
@@ -453,6 +456,12 @@ impl<'a> Scene<'a> {
                 let (bw, bh) = fit(image, *width, *height);
                 Ok(Source::stretched(image.clone(), bw, bh))
             }
+            #[cfg(not(feature = "video"))]
+            Content::Video { .. } => {
+                let _ = span;
+                Err(RenderError::Unsupported(crate::NO_VIDEO.into()))
+            }
+            #[cfg(feature = "video")]
             Content::Video {
                 asset,
                 width,
@@ -546,6 +555,7 @@ impl<'a> Scene<'a> {
     }
 
     /// A video asset, opened once and kept so frames decode onward.
+    #[cfg(feature = "video")]
     fn video(&mut self, id: &'a str) -> Result<&mut Video<'a>, RenderError> {
         if !self.videos.contains_key(id) {
             let missing = || RenderError::Unsupported(format!("asset {id:?} is missing"));
@@ -565,6 +575,7 @@ impl<'a> Scene<'a> {
     }
 
     /// The package path of asset `id`, for error messages.
+    #[cfg(feature = "video")]
     fn asset_path(&self, id: &str) -> String {
         match self.recipe.assets.get(id).map(|a| &a.source) {
             Some(AssetSource::Path(path)) => path.clone(),
