@@ -987,7 +987,11 @@ fn estimates_read_sizes_from_the_recipe_and_headers() {
     assert_eq!(mix.output_samples, 300 * 48 * 2);
     // The mono tone, the stereo chord (each counted once) and the voice in whole AAC frames.
     let voice = mix.source_samples - 11_025 - 9_600 * 2;
-    assert!(voice > 0 && voice.is_multiple_of(1024), "{}", mix.source_samples);
+    assert!(
+        voice > 0 && voice.is_multiple_of(1024),
+        "{}",
+        mix.source_samples
+    );
     assert!(mix.asset_bytes > 0);
 
     // A blur that would run for hours costs far more than the whole effects case.
