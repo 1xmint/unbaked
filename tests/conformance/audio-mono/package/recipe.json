@@ -1,0 +1,31 @@
+{
+  "unbaked": 0,
+  "output": {
+    "kind": "audio",
+    "duration_ms": 200,
+    "sample_rate": 44100,
+    "channels": 1
+  },
+  "assets": {
+    "chord": {
+      "path": "assets/chord-48k-stereo.wav"
+    },
+    "voice": {
+      "path": "assets/voice.m4a"
+    }
+  },
+  "audio": [
+    {
+      "id": "chord",
+      "asset": "chord",
+      "gain_db": -3
+    },
+    {
+      "id": "voice",
+      "asset": "voice",
+      "start_ms": 40,
+      "trim_start_ms": 30,
+      "fade_in_ms": 20
+    }
+  ]
+}

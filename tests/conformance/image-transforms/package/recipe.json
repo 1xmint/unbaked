@@ -1,0 +1,103 @@
+{
+  "unbaked": 0,
+  "output": {
+    "kind": "image",
+    "width": 64,
+    "height": 48,
+    "at_ms": 500
+  },
+  "assets": {
+    "badge": {
+      "path": "assets/badge.png"
+    },
+    "gradient": {
+      "path": "assets/gradient.png"
+    }
+  },
+  "layers": [
+    {
+      "id": "big",
+      "type": "image",
+      "asset": "badge",
+      "width": 24,
+      "transform": {
+        "x": 16,
+        "y": 16,
+        "anchor_x": 0.5,
+        "anchor_y": 0.5,
+        "rotation_deg": 30
+      }
+    },
+    {
+      "id": "small",
+      "type": "image",
+      "asset": "gradient",
+      "width": 12,
+      "transform": {
+        "x": 36,
+        "y": 4
+      }
+    },
+    {
+      "id": "squeezed",
+      "type": "image",
+      "asset": "badge",
+      "width": 20,
+      "height": 6,
+      "transform": {
+        "x": 40,
+        "y": 30,
+        "rotation_deg": -15,
+        "scale_x": 1.25,
+        "scale_y": 0.75
+      }
+    },
+    {
+      "id": "moving",
+      "type": "solid",
+      "color": "#ff0000ff",
+      "width": 5.5,
+      "height": 5.5,
+      "transform": {
+        "x": {
+          "keys": [
+            {
+              "t_ms": 0,
+              "v": 0,
+              "ease": "ease-in-out"
+            },
+            {
+              "t_ms": 1000,
+              "v": 60
+            }
+          ]
+        },
+        "y": 40,
+        "rotation_deg": {
+          "keys": [
+            {
+              "t_ms": 0,
+              "v": 0
+            },
+            {
+              "t_ms": 1000,
+              "v": 90
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "corner",
+      "type": "image",
+      "asset": "badge",
+      "transform": {
+        "x": 56,
+        "y": 8,
+        "anchor_x": 1,
+        "anchor_y": 0,
+        "rotation_deg": 45
+      }
+    }
+  ]
+}

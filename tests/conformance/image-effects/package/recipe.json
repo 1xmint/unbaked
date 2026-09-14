@@ -1,0 +1,134 @@
+{
+  "unbaked": 0,
+  "output": {
+    "kind": "image",
+    "width": 64,
+    "height": 40,
+    "background": "#406080ff"
+  },
+  "assets": {
+    "badge": {
+      "path": "assets/badge.png"
+    },
+    "gradient": {
+      "path": "assets/gradient.png"
+    }
+  },
+  "layers": [
+    {
+      "id": "blurred",
+      "type": "image",
+      "asset": "badge",
+      "width": 16,
+      "transform": {
+        "x": 4,
+        "y": 4
+      },
+      "effects": [
+        {
+          "type": "blur",
+          "sigma": 1.5
+        }
+      ]
+    },
+    {
+      "id": "shadowed",
+      "type": "solid",
+      "color": "#ffcc00ff",
+      "width": 14,
+      "height": 10,
+      "transform": {
+        "x": 26,
+        "y": 6
+      },
+      "effects": [
+        {
+          "type": "shadow",
+          "dx": 3,
+          "dy": 2,
+          "sigma": 1.2,
+          "color": "#000000a0"
+        }
+      ]
+    },
+    {
+      "id": "adjusted",
+      "type": "image",
+      "asset": "gradient",
+      "width": 20,
+      "transform": {
+        "x": 42,
+        "y": 4
+      },
+      "effects": [
+        {
+          "type": "adjust",
+          "brightness": 1.2,
+          "contrast": 0.7,
+          "saturation": 0.3
+        }
+      ]
+    },
+    {
+      "id": "chain",
+      "type": "image",
+      "asset": "badge",
+      "width": 16,
+      "transform": {
+        "x": 4,
+        "y": 22
+      },
+      "effects": [
+        {
+          "type": "adjust",
+          "saturation": 0
+        },
+        {
+          "type": "blur",
+          "sigma": 0.8
+        },
+        {
+          "type": "shadow",
+          "dx": -2,
+          "dy": 1,
+          "color": "#ff00ff80"
+        }
+      ]
+    },
+    {
+      "id": "soft",
+      "type": "group",
+      "effects": [
+        {
+          "type": "blur",
+          "sigma": 2
+        }
+      ],
+      "layers": [
+        {
+          "id": "left",
+          "type": "solid",
+          "color": "#ffffffff",
+          "width": 10,
+          "height": 10,
+          "transform": {
+            "x": 30,
+            "y": 24
+          }
+        },
+        {
+          "id": "right",
+          "type": "solid",
+          "color": "#00ff80ff",
+          "width": 10,
+          "height": 10,
+          "transform": {
+            "x": 36,
+            "y": 27
+          },
+          "blend": "difference"
+        }
+      ]
+    }
+  ]
+}

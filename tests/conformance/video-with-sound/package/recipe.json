@@ -1,0 +1,48 @@
+{
+  "unbaked": 0,
+  "output": {
+    "kind": "video",
+    "width": 32,
+    "height": 18,
+    "fps": "25",
+    "duration_ms": 400,
+    "background": "#102040ff"
+  },
+  "assets": {
+    "tone": {
+      "path": "assets/tone-44k-mono.wav"
+    }
+  },
+  "layers": [
+    {
+      "id": "mover",
+      "type": "solid",
+      "color": "#ffd000ff",
+      "width": 6,
+      "height": 6,
+      "transform": {
+        "x": {
+          "keys": [
+            {
+              "t_ms": 0,
+              "v": 0
+            },
+            {
+              "t_ms": 400,
+              "v": 26
+            }
+          ]
+        },
+        "y": 6
+      }
+    }
+  ],
+  "audio": [
+    {
+      "id": "tone",
+      "asset": "tone",
+      "gain_db": -6,
+      "fade_out_ms": 100
+    }
+  ]
+}

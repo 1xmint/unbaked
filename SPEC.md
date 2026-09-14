@@ -736,12 +736,18 @@ one-word edit, and the file stays readable until it is rendered again.
 Bit-exact output across independent renderers is not realistic for resampling,
 text anti-aliasing and lossy encoders. Version 0 defines "matching" as:
 
-- **Image and video frames**, compared before encoding: every channel within ±2 of the reference for at least 99.9% of pixels, excluding pixels covered by text layers.
-- **Text**: glyph positions within 0.5 px of the reference.
-- **Audio**, compared before encoding: difference signal at least 60 dB below the reference signal.
+- **Image and video frames**, compared before encoding: every channel within ±2 of the reference for at least 99.9% of pixels, excluding pixels covered by text layers. An `image` frame is compared as quantised straight RGBA (section 5.7), a `video` frame as quantised RGB over opaque black.
+- **Text**: the same glyphs, each glyph origin within 0.5 px of the reference, measured in the layer box (x right and y down from its top-left corner, y on the baseline).
+- **Audio**, compared before encoding: the same sample rate, channel count and number of samples, and a difference signal at least 60 dB below the reference signal (summed energy over all channels).
+
+A pixel is **covered by a text layer** when any part of that layer's placed
+source image reaches it: the whole image after effects (section 5.4, step 3),
+including its transparent parts, while the layer is visible. The layer's
+opacity, mask and blend mode are ignored, and text layers inside masks count.
 
 The reference renderer is the one in this repository. Conformance test cases
-will live in `tests/conformance/` (not written yet).
+are in `tests/conformance/`, each with the package to render and the reference
+output to compare against.
 
 ---
 

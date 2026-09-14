@@ -1,0 +1,66 @@
+{
+  "unbaked": 0,
+  "output": {
+    "kind": "audio",
+    "duration_ms": 300,
+    "sample_rate": 48000,
+    "channels": 2
+  },
+  "assets": {
+    "tone": {
+      "path": "assets/tone-44k-mono.wav"
+    },
+    "chord": {
+      "path": "assets/chord-48k-stereo.wav"
+    },
+    "voice": {
+      "path": "assets/voice.m4a"
+    }
+  },
+  "audio": [
+    {
+      "id": "tone",
+      "asset": "tone",
+      "start_ms": 20,
+      "fade_in_ms": 30,
+      "fade_out_ms": 50,
+      "gain_db": {
+        "keys": [
+          {
+            "t_ms": 0,
+            "v": -6,
+            "ease": "ease-in"
+          },
+          {
+            "t_ms": 150,
+            "v": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "chord",
+      "asset": "chord",
+      "start_ms": 100,
+      "trim_start_ms": 50,
+      "duration_ms": 150,
+      "gain_db": -3
+    },
+    {
+      "id": "voice",
+      "asset": "voice",
+      "gain_db": -9
+    },
+    {
+      "id": "loud",
+      "asset": "chord",
+      "start_ms": 250,
+      "gain_db": 12
+    },
+    {
+      "id": "muted",
+      "asset": "tone",
+      "muted": true
+    }
+  ]
+}
